@@ -73,7 +73,6 @@ interface AnthropicStreamEvent {
 async function readSSE(
   response: Response,
   onEvent: (eventType: string | null, payload: string) => void,
-  debug?: string,
 ): Promise<void> {
   if (!response.body) return;
   const reader = response.body.getReader();
@@ -90,8 +89,6 @@ async function readSSE(
     buf = lines.pop() ?? '';
 
     for (const line of lines) {
-      // B5.2 debug — log every raw line when a debug tag is provided.
-      if (debug) console.log(`[${debug} line]`, line);
       const trimmed = line.trim();
       if (trimmed === '') {
         // Blank line = end of an SSE event block. Reset so a stray
@@ -101,7 +98,6 @@ async function readSSE(
       }
       if (trimmed.startsWith('event:')) {
         currentEvent = trimmed.slice(6).trim();
-        if (debug) console.log(`[${debug} event]`, currentEvent);
         continue;
       }
       if (trimmed.startsWith('data:')) {
@@ -178,20 +174,6 @@ export async function streamClaudeAnswer(
   }
 
   try {
-    // B5.2 debug — build body separately so we can log exactly what
-    // hits the wire (api key stays in headers, not body, so this is
-    // safe to dump in full).
-    const body = {
-      model: ANTHROPIC_MODEL,
-      max_tokens: MAX_TOKENS,
-      stream: true,
-      system: buildSystemPrompt(),
-      // Claude takes the system prompt separately; `messages` is
-      // user/assistant turns only.
-      messages: [{ role: 'user', content: question }],
-    };
-    console.log('[claude request]', JSON.stringify(body));
-
     const res = await fetch(ANTHROPIC_ENDPOINT, {
       method: 'POST',
       headers: {
@@ -205,17 +187,18 @@ export async function streamClaudeAnswer(
         // desktop build already uses.
         'anthropic-dangerous-direct-browser-access': 'true',
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        model: ANTHROPIC_MODEL,
+        max_tokens: MAX_TOKENS,
+        stream: true,
+        system: buildSystemPrompt(),
+        // Claude takes the system prompt separately; `messages` is
+        // user/assistant turns only.
+        messages: [{ role: 'user', content: question }],
+      }),
     });
 
-    console.log('[claude status]', res.status);
-    console.log('[claude headers]', Object.fromEntries(res.headers.entries()));
-
     if (res.status !== 200) {
-      // B5.3 debug — throw instead of silent return so the caller
-      // (handleChunk) can surface the failure on screen via
-      // appendAnswer, since we can't see Safari devtools from a
-      // Windows host.
       const errText = await res.clone().text();
       throw new Error(`Claude ${res.status}: ${errText}`);
     }
@@ -227,28 +210,18 @@ export async function streamClaudeAnswer(
     // The inner delta.type === 'text_delta' check is the second-line
     // defence for future delta variants (e.g. input_json_delta for
     // tool use), so we don't accidentally feed JSON into the answer.
-    await readSSE(
-      res,
-      (eventType, payload) => {
-        if (eventType !== 'content_block_delta') return;
-        try {
-          const json = JSON.parse(payload) as AnthropicStreamEvent;
-          // B5.2 debug — log every token candidate (will be undefined
-          // for non-text_delta variants like input_json_delta).
-          console.log('[claude token]', json.delta?.text);
-          if (json.delta?.type === 'text_delta' && json.delta.text) {
-            onChunk(json.delta.text);
-          }
-        } catch {
-          // Partial JSON across a chunk boundary — drop it.
+    await readSSE(res, (eventType, payload) => {
+      if (eventType !== 'content_block_delta') return;
+      try {
+        const json = JSON.parse(payload) as AnthropicStreamEvent;
+        if (json.delta?.type === 'text_delta' && json.delta.text) {
+          onChunk(json.delta.text);
         }
-      },
-      'claude',
-    );
+      } catch {
+        // Partial JSON across a chunk boundary — drop it.
+      }
+    });
   } catch (e) {
     console.error('[ai/claude] request failed:', e);
-    // B5.3 debug — re-throw so handleChunk can render the failure
-    // on screen via appendAnswer (we can't see Safari devtools).
-    throw e;
   }
 }
