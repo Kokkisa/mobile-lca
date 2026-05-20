@@ -5,6 +5,7 @@ import { useWakeLock } from '../hooks/useWakeLock';
 import { useVAD } from '../hooks/useVAD';
 import { useChunker } from '../hooks/useChunker';
 import { transcribeChunk } from '../lib/whisper';
+import { streamOpenAIAnswer, streamClaudeAnswer } from '../lib/ai';
 import WaveBars from '../components/WaveBars';
 
 const STATUS_META: Record<Status, { label: string; dot: string; pulse: boolean }> = {
@@ -58,8 +59,8 @@ export default function VoiceScreen() {
   const answer = useStore((s) => s.answer);
   const setTranscript = useStore((s) => s.setTranscript);
   const setAnswer = useStore((s) => s.setAnswer);
+  const appendAnswer = useStore((s) => s.appendAnswer);
   const setScreen = useStore((s) => s.setScreen);
-  const groqApiKey = useStore((s) => s.groqApiKey);
 
   const mic = useMic();
   const wakeLock = useWakeLock();
@@ -82,30 +83,56 @@ export default function VoiceScreen() {
       );
       setChunkCount((c) => c + 1);
 
-      // Skip if the session was stopped — a late in-flight blob can
-      // arrive a beat after STOP and we don't want to flicker the UI
-      // or fire a transcription request after the user has left.
+      // Skip late blobs that arrive a beat after STOP.
       if (useStore.getState().status === 'idle') return;
 
-      // Settings gate: surface the missing-key state in the transcript
-      // bubble itself so the user sees exactly why nothing's happening,
-      // and don't bother flipping status / hitting the network.
-      if (!groqApiKey) {
+      // Settings gate for transcription — show why nothing's happening
+      // in the transcript bubble itself, skip the network call.
+      const groq = useStore.getState().groqApiKey;
+      if (!groq) {
         setTranscript('Add Groq API key in Settings');
         return;
       }
 
       setStatus('processing');
-      const text = await transcribeChunk(blob, groqApiKey);
+      const text = await transcribeChunk(blob, groq);
 
-      // Re-check after the await — user may have hit STOP while we
-      // were waiting on Whisper. If so, leave the idle state alone.
+      // User may have hit STOP during the Whisper round-trip.
       if (useStore.getState().status === 'idle') return;
 
-      if (text) setTranscript(text);
+      if (!text) {
+        // Empty transcription (silence / API error) — return to
+        // listening, leave any previous transcript on screen.
+        setStatus('listening');
+        return;
+      }
+      setTranscript(text);
+
+      // ---- Tier 3: stream an answer ----
+      // Pull keys+model fresh at dispatch time so a settings change
+      // mid-session takes effect on the next chunk without a rebind.
+      const { selectedModel, openaiApiKey, anthropicApiKey } = useStore.getState();
+      const isOpenAI = selectedModel === 'gpt-4o';
+      const answerKey = isOpenAI ? openaiApiKey : anthropicApiKey;
+
+      if (!answerKey) {
+        setAnswer(`Add ${isOpenAI ? 'OpenAI' : 'Anthropic'} key in Settings`);
+        setStatus('listening');
+        return;
+      }
+
+      setAnswer('');
+      setStatus('answering');
+
+      const streamer = isOpenAI ? streamOpenAIAnswer : streamClaudeAnswer;
+      await streamer(text, answerKey, (token) => appendAnswer(token));
+
+      // Final idle re-check — STOP can also land during the answer
+      // stream. Leave status alone if we're already torn down.
+      if (useStore.getState().status === 'idle') return;
       setStatus('listening');
     },
-    [setStatus, setTranscript, groqApiKey],
+    [setStatus, setTranscript, setAnswer, appendAnswer],
   );
 
   const chunker = useChunker({
