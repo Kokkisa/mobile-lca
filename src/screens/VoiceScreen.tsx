@@ -7,6 +7,7 @@ import { useChunker } from '../hooks/useChunker';
 import { transcribeChunk } from '../lib/whisper';
 import { streamOpenAIAnswer, streamClaudeAnswer } from '../lib/ai';
 import { findTier1Match } from '../lib/tiers';
+import { findCachedAnswer, addToCache } from '../lib/tier2';
 import WaveBars from '../components/WaveBars';
 
 const STATUS_META: Record<Status, { label: string; dot: string; pulse: boolean }> = {
@@ -116,7 +117,7 @@ export default function VoiceScreen() {
 
   // Which tier answered the most recent chunk — drives the badge in
   // the bottom-right of the session bar. null = no answer yet.
-  const [currentTier, setCurrentTier] = useState<1 | 3 | null>(null);
+  const [currentTier, setCurrentTier] = useState<1 | 2 | 3 | null>(null);
 
   // Manual mute — pauses VAD + chunker but keeps the mic stream alive
   // so unmute is instant (no re-prompt). Auto-clears after 45s; tapping
@@ -220,6 +221,24 @@ export default function VoiceScreen() {
         return;
       }
 
+      // ---- Tier 2: semantic cache of past Tier 3 answers ----
+      // Requires an OpenAI key for the embedding call. Falls through
+      // silently if missing or if findCachedAnswer errors.
+      const t2Key = useStore.getState().openaiApiKey;
+      if (t2Key) {
+        const cached = await findCachedAnswer(text, t2Key);
+        // User may have stopped during the embedding round-trip.
+        if (useStore.getState().status === 'idle') return;
+        if (cached) {
+          setAnswer(cached);
+          setCurrentTier(2);
+          appendToHistory('user', text);
+          appendToHistory('assistant', cached);
+          setStatus('listening');
+          return;
+        }
+      }
+
       // ---- Tier 3: stream an answer ----
       // Snapshot prior history BEFORE the current user turn is
       // appended, so the streamer doesn't see the new question twice
@@ -260,7 +279,13 @@ export default function VoiceScreen() {
         },
         conversationHistory,
       );
-      if (streamed) appendToHistory('assistant', streamed);
+      if (streamed) {
+        appendToHistory('assistant', streamed);
+        // Fire-and-forget: stash this Q→A pair in the Tier-2 cache so
+        // a similar future question short-circuits the LLM call.
+        // addToCache no-ops silently if the key is missing.
+        void addToCache(text, streamed, useStore.getState().openaiApiKey);
+      }
 
       // Final idle re-check — STOP can also land during the answer
       // stream. Leave status alone if we're already torn down.
