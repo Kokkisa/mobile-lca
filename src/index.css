@@ -16,7 +16,7 @@ body,
 
 body {
   overscroll-behavior: none;
-  font-family: 'DM Sans', system-ui, sans-serif;
+  font-family: 'Space Mono', ui-monospace, monospace;
   color: #e8e8f0;
   -webkit-font-smoothing: antialiased;
 }

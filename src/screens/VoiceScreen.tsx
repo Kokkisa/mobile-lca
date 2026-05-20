@@ -90,9 +90,9 @@ export default function VoiceScreen() {
         <div className="rounded-2xl bg-panel border border-border px-4 py-3 min-h-[64px] flex items-center">
           <span className="font-mono text-[10px] text-text-dim tracking-widest mr-3 shrink-0">HEARD</span>
           {transcript ? (
-            <p className="text-sm text-text leading-relaxed line-clamp-3">{transcript}</p>
+            <p className="font-mono text-sm text-text leading-relaxed line-clamp-3">{transcript}</p>
           ) : (
-            <p className="text-sm text-text-dim italic">Waiting for the next question…</p>
+            <p className="font-mono text-sm text-text-dim italic">Waiting for the next question…</p>
           )}
         </div>
       </div>
@@ -110,7 +110,7 @@ export default function VoiceScreen() {
           </div>
           <div className="flex-1 min-h-0 overflow-y-auto">
             {answer ? (
-              <p className="text-[15px] leading-relaxed whitespace-pre-wrap text-text">{answer}</p>
+              <p className="font-mono text-[15px] leading-relaxed whitespace-pre-wrap text-text">{answer}</p>
             ) : (
               <div className="h-full flex items-center justify-center">
                 <ConcentricRings />

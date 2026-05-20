@@ -15,7 +15,8 @@ export default {
       },
       fontFamily: {
         mono: ['"Space Mono"', 'ui-monospace', 'monospace'],
-        sans: ['"DM Sans"', 'system-ui', 'sans-serif'],
+        sans: ['"Space Mono"', 'ui-monospace', 'monospace'],
+        display: ['"Space Mono"', 'ui-monospace', 'monospace'],
       },
     },
   },
