@@ -125,7 +125,13 @@ export default function VoiceScreen() {
       setStatus('answering');
 
       const streamer = isOpenAI ? streamOpenAIAnswer : streamClaudeAnswer;
-      await streamer(text, answerKey, (token) => appendAnswer(token));
+      // B5.3 debug — surface streamer errors directly into the answer
+      // card so we can read them on the iPhone without remote DevTools.
+      try {
+        await streamer(text, answerKey, (token) => appendAnswer(token));
+      } catch (err) {
+        appendAnswer('ERROR: ' + String(err));
+      }
 
       // Final idle re-check — STOP can also land during the answer
       // stream. Leave status alone if we're already torn down.

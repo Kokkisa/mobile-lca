@@ -210,14 +210,15 @@ export async function streamClaudeAnswer(
     });
 
     console.log('[claude status]', res.status);
+    console.log('[claude headers]', Object.fromEntries(res.headers.entries()));
 
     if (res.status !== 200) {
-      // Clone so the original body remains readable if a future log
-      // hook wants it too — and so we get the full error, not the
-      // first 200 chars like the previous handler.
+      // B5.3 debug — throw instead of silent return so the caller
+      // (handleChunk) can surface the failure on screen via
+      // appendAnswer, since we can't see Safari devtools from a
+      // Windows host.
       const errText = await res.clone().text();
-      console.log('[claude error]', errText);
-      return;
+      throw new Error(`Claude ${res.status}: ${errText}`);
     }
 
     // Gate on the SSE event type, not on a field inside the data JSON.
@@ -247,5 +248,8 @@ export async function streamClaudeAnswer(
     );
   } catch (e) {
     console.error('[ai/claude] request failed:', e);
+    // B5.3 debug — re-throw so handleChunk can render the failure
+    // on screen via appendAnswer (we can't see Safari devtools).
+    throw e;
   }
 }
