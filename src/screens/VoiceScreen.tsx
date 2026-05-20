@@ -1,7 +1,9 @@
-import { useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useStore, type Status } from '../store/useStore';
 import { useMic } from '../hooks/useMic';
 import { useWakeLock } from '../hooks/useWakeLock';
+import { useVAD } from '../hooks/useVAD';
+import { useChunker } from '../hooks/useChunker';
 import WaveBars from '../components/WaveBars';
 
 const STATUS_META: Record<Status, { label: string; dot: string; pulse: boolean }> = {
@@ -66,6 +68,43 @@ export default function VoiceScreen() {
   const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
   const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
 
+  // Debug surface for B3 — how many speech segments the VAD+chunker
+  // pipeline has produced this session.
+  const [chunkCount, setChunkCount] = useState(0);
+
+  const handleChunk = useCallback(
+    (blob: Blob, durationMs: number) => {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[chunk] ${Math.round(durationMs)}ms · ${(blob.size / 1024).toFixed(1)} KB · ${blob.type}`,
+      );
+      setChunkCount((c) => c + 1);
+      // Skip the status flicker if the session was already stopped — a
+      // late in-flight blob can arrive a beat after STOP.
+      if (useStore.getState().status === 'idle') return;
+      setStatus('processing');
+      window.setTimeout(() => {
+        if (useStore.getState().status === 'processing') {
+          setStatus('listening');
+        }
+      }, 500);
+    },
+    [setStatus],
+  );
+
+  const chunker = useChunker({
+    stream: mic.stream,
+    onChunk: handleChunk,
+  });
+
+  // VAD drives the chunker: speech-start → MediaRecorder.start(),
+  // 800ms of silence → MediaRecorder.stop() → blob via handleChunk.
+  useVAD({
+    analyser,
+    onSpeechStart: chunker.start,
+    onSpeechEnd: chunker.stop,
+  });
+
   const isActive = status !== 'idle';
 
   const setupAudio = (stream: MediaStream) => {
@@ -124,6 +163,7 @@ export default function VoiceScreen() {
       setTranscript('Microphone access denied');
       return;
     }
+    setChunkCount(0);
     setupAudio(stream);
     await wakeLock.request();
     setStatus('listening');
@@ -219,6 +259,7 @@ export default function VoiceScreen() {
 
           <div className="font-mono text-[11px] tracking-widest text-text-dim px-3 py-2 rounded-lg border border-border bg-panel">
             TIER <span className="text-text-dim">—</span>
+            <span className="text-accent ml-2">{chunkCount}</span>
           </div>
         </div>
       </footer>
