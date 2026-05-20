@@ -53,6 +53,17 @@ function MicOffIcon() {
   );
 }
 
+function MicOnIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="2" width="6" height="12" rx="3" />
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+      <line x1="12" y1="19" x2="12" y2="23" />
+      <line x1="8" y1="23" x2="16" y2="23" />
+    </svg>
+  );
+}
+
 const MUTE_DURATION_SECONDS = 45;
 
 function GearIcon() {
@@ -140,13 +151,21 @@ export default function VoiceScreen() {
 
   const onMuteTap = () => {
     if (muted) {
-      // Tap-while-muted resets the countdown, never unmutes — STOP and
-      // the 45s timer are the only ways out of mute.
+      // Tap-while-muted resets the countdown — the dedicated UNMUTE
+      // button (rendered next to it while muted) is the manual escape.
       startMuteCountdown();
       return;
     }
     setMuted(true);
     startMuteCountdown();
+  };
+
+  const onUnmute = () => {
+    // Immediate manual unmute — clear timer + state in one shot so VAD
+    // and the chunker resume on the next render.
+    clearMuteTimer();
+    setMuted(false);
+    setMuteRemaining(0);
   };
 
   // Safety net: clear timer on unmount so hot reload / app close doesn't
@@ -416,19 +435,36 @@ export default function VoiceScreen() {
             CLEAR
           </button>
 
-          {isActive && (
+          {isActive && !muted && (
             <button
               onClick={onMuteTap}
-              aria-label={muted ? `Muted, ${muteRemaining}s remaining — tap to reset` : 'Mute'}
-              className={
-                muted
-                  ? 'flex items-center gap-1.5 font-mono text-[11px] tracking-widest text-white px-3 py-2 rounded-lg bg-red-500/80 border border-red-500 active:opacity-70'
-                  : 'flex items-center gap-1.5 font-mono text-[11px] tracking-widest text-text-dim hover:text-text px-3 py-2 rounded-lg border border-border bg-panel active:opacity-60'
-              }
+              aria-label="Mute"
+              className="flex items-center gap-1.5 font-mono text-[11px] tracking-widest text-text-dim hover:text-text px-3 py-2 rounded-lg border border-border bg-panel active:opacity-60"
             >
               <MicOffIcon />
-              <span>{muted ? muteRemaining : 'MUTE'}</span>
+              <span>MUTE</span>
             </button>
+          )}
+
+          {isActive && muted && (
+            <>
+              <button
+                onClick={onMuteTap}
+                aria-label={`Muted, ${muteRemaining}s remaining — tap to reset`}
+                className="flex items-center gap-1.5 font-mono text-[11px] tracking-widest text-white px-3 py-2 rounded-lg bg-red-500/80 border border-red-500 active:opacity-70"
+              >
+                <MicOffIcon />
+                <span>{muteRemaining}</span>
+              </button>
+              <button
+                onClick={onUnmute}
+                aria-label="Unmute"
+                className="flex items-center gap-1.5 font-mono text-[11px] tracking-widest font-bold text-bg px-3 py-2 rounded-lg bg-accent border border-accent active:opacity-70"
+              >
+                <MicOnIcon />
+                <span>UNMUTE</span>
+              </button>
+            </>
           )}
 
           <button
