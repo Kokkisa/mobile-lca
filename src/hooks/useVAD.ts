@@ -10,6 +10,9 @@ interface UseVADOptions {
   analyser: AnalyserNode | null;
   onSpeechStart?: (timestamp: number) => void;
   onSpeechEnd?: (start: number, end: number) => void;
+  /** Pause polling without tearing down the analyser graph — used by
+   *  the manual mute button so unmute can resume instantly. */
+  paused?: boolean;
 }
 
 interface UseVADReturn {
@@ -29,7 +32,12 @@ interface UseVADReturn {
  * Callbacks are held in refs so consumers don't have to memoise the
  * functions they pass in — re-rendering with fresh closures Just Works.
  */
-export function useVAD({ analyser, onSpeechStart, onSpeechEnd }: UseVADOptions): UseVADReturn {
+export function useVAD({
+  analyser,
+  onSpeechStart,
+  onSpeechEnd,
+  paused = false,
+}: UseVADOptions): UseVADReturn {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [speechStart, setSpeechStart] = useState<number | null>(null);
   const [speechEnd, setSpeechEnd] = useState<number | null>(null);
@@ -48,7 +56,10 @@ export function useVAD({ analyser, onSpeechStart, onSpeechEnd }: UseVADOptions):
   }, [onSpeechStart, onSpeechEnd]);
 
   useEffect(() => {
-    if (!analyser) {
+    if (!analyser || paused) {
+      // No analyser yet OR we've been paused (mute). Either way, drop
+      // all speech state so we don't fire a phantom speech-end the
+      // moment polling resumes.
       isSpeakingRef.current = false;
       speechStartRef.current = null;
       lastSpeechTimeRef.current = null;
@@ -102,7 +113,7 @@ export function useVAD({ analyser, onSpeechStart, onSpeechEnd }: UseVADOptions):
       speechStartRef.current = null;
       lastSpeechTimeRef.current = null;
     };
-  }, [analyser]);
+  }, [analyser, paused]);
 
   return { isSpeaking, speechStart, speechEnd };
 }

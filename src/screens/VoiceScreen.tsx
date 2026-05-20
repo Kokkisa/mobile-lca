@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore, type Status } from '../store/useStore';
 import { useMic } from '../hooks/useMic';
 import { useWakeLock } from '../hooks/useWakeLock';
@@ -16,7 +16,18 @@ const STATUS_META: Record<Status, { label: string; dot: string; pulse: boolean }
   answering:  { label: 'ANSWERING',  dot: 'bg-accent',           pulse: false },
 };
 
-function StatusPill({ status }: { status: Status }) {
+function StatusPill({ status, muted }: { status: Status; muted: boolean }) {
+  // Mute overrides the listening/processing/answering label — the user
+  // needs an unambiguous "your mic is off" signal regardless of what
+  // the pipeline is doing in the background.
+  if (muted) {
+    return (
+      <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-500/10 border border-red-500/40">
+        <span className="block w-2 h-2 rounded-full bg-red-500 animate-pulse-ring" />
+        <span className="font-mono text-[11px] tracking-[0.18em] text-red-400">MUTED</span>
+      </div>
+    );
+  }
   const meta = STATUS_META[status];
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-panel border border-border">
@@ -29,6 +40,20 @@ function StatusPill({ status }: { status: Status }) {
     </div>
   );
 }
+
+function MicOffIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="1" y1="1" x2="23" y2="23" />
+      <path d="M9 9v3a3 3 0 0 0 5.12 2.12M15 9.34V4a3 3 0 0 0-5.94-.6" />
+      <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23" />
+      <line x1="12" y1="19" x2="12" y2="23" />
+      <line x1="8" y1="23" x2="16" y2="23" />
+    </svg>
+  );
+}
+
+const MUTE_DURATION_SECONDS = 45;
 
 function GearIcon() {
   return (
@@ -81,6 +106,56 @@ export default function VoiceScreen() {
   // Which tier answered the most recent chunk — drives the badge in
   // the bottom-right of the session bar. null = no answer yet.
   const [currentTier, setCurrentTier] = useState<1 | 3 | null>(null);
+
+  // Manual mute — pauses VAD + chunker but keeps the mic stream alive
+  // so unmute is instant (no re-prompt). Auto-clears after 45s; tapping
+  // again while muted just resets the countdown.
+  const [muted, setMuted] = useState(false);
+  const [muteRemaining, setMuteRemaining] = useState(0);
+  const muteTimerRef = useRef<number | null>(null);
+
+  const clearMuteTimer = useCallback(() => {
+    if (muteTimerRef.current !== null) {
+      window.clearInterval(muteTimerRef.current);
+      muteTimerRef.current = null;
+    }
+  }, []);
+
+  const startMuteCountdown = useCallback(() => {
+    clearMuteTimer();
+    setMuteRemaining(MUTE_DURATION_SECONDS);
+    muteTimerRef.current = window.setInterval(() => {
+      setMuteRemaining((r) => {
+        if (r <= 1) {
+          // Auto-unmute. Clear inside the setter so we don't race with
+          // a stale ref reading.
+          clearMuteTimer();
+          setMuted(false);
+          return 0;
+        }
+        return r - 1;
+      });
+    }, 1000);
+  }, [clearMuteTimer]);
+
+  const onMuteTap = () => {
+    if (muted) {
+      // Tap-while-muted resets the countdown, never unmutes — STOP and
+      // the 45s timer are the only ways out of mute.
+      startMuteCountdown();
+      return;
+    }
+    setMuted(true);
+    startMuteCountdown();
+  };
+
+  // Safety net: clear timer on unmount so hot reload / app close doesn't
+  // leave the interval running.
+  useEffect(() => {
+    return () => {
+      clearMuteTimer();
+    };
+  }, [clearMuteTimer]);
 
   const handleChunk = useCallback(
     async (blob: Blob, durationMs: number) => {
@@ -179,14 +254,18 @@ export default function VoiceScreen() {
   const chunker = useChunker({
     stream: mic.stream,
     onChunk: handleChunk,
+    paused: muted,
   });
 
   // VAD drives the chunker: speech-start → MediaRecorder.start(),
   // 800ms of silence → MediaRecorder.stop() → blob via handleChunk.
+  // Both hooks receive `paused` so mute cleanly halts the pipeline
+  // without tearing down the audio graph.
   useVAD({
     analyser,
     onSpeechStart: chunker.start,
     onSpeechEnd: chunker.stop,
+    paused: muted,
   });
 
   const isActive = status !== 'idle';
@@ -237,6 +316,11 @@ export default function VoiceScreen() {
       mic.stop();
       await wakeLock.release();
       clearHistory();
+      // Mute state is session-scoped — wipe it (and any running
+      // countdown) so the next START begins unmuted.
+      setMuted(false);
+      setMuteRemaining(0);
+      clearMuteTimer();
       setStatus('idle');
       return;
     }
@@ -269,7 +353,7 @@ export default function VoiceScreen() {
             <span className="font-mono font-bold text-accent text-lg tracking-wider glow-text">LCA</span>
             <span className="font-mono text-[10px] text-text-dim tracking-widest">v0.1</span>
           </div>
-          <StatusPill status={status} />
+          <StatusPill status={status} muted={muted} />
           <button
             onClick={() => setScreen('settings')}
             className="text-text-dim hover:text-text p-1.5 -m-1.5 active:opacity-60"
@@ -331,6 +415,21 @@ export default function VoiceScreen() {
           >
             CLEAR
           </button>
+
+          {isActive && (
+            <button
+              onClick={onMuteTap}
+              aria-label={muted ? `Muted, ${muteRemaining}s remaining — tap to reset` : 'Mute'}
+              className={
+                muted
+                  ? 'flex items-center gap-1.5 font-mono text-[11px] tracking-widest text-white px-3 py-2 rounded-lg bg-red-500/80 border border-red-500 active:opacity-70'
+                  : 'flex items-center gap-1.5 font-mono text-[11px] tracking-widest text-text-dim hover:text-text px-3 py-2 rounded-lg border border-border bg-panel active:opacity-60'
+              }
+            >
+              <MicOffIcon />
+              <span>{muted ? muteRemaining : 'MUTE'}</span>
+            </button>
+          )}
 
           <button
             onClick={onToggleSession}

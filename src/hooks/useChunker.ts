@@ -5,6 +5,9 @@ const MIN_DURATION_MS = 1000;
 interface UseChunkerOptions {
   stream: MediaStream | null;
   onChunk: (blob: Blob, durationMs: number) => void;
+  /** When true, refuse to start new recordings and kill any in-flight
+   *  one — the blob from a kill-mid-recording is dropped, not emitted. */
+  paused?: boolean;
 }
 
 interface UseChunkerReturn {
@@ -38,10 +41,15 @@ function pickMimeType(): string {
  * the previous recorder's dataavailable fires after the new one has
  * begun.
  */
-export function useChunker({ stream, onChunk }: UseChunkerOptions): UseChunkerReturn {
+export function useChunker({
+  stream,
+  onChunk,
+  paused = false,
+}: UseChunkerOptions): UseChunkerReturn {
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(stream);
   const onChunkRef = useRef(onChunk);
+  const pausedRef = useRef(paused);
 
   useEffect(() => {
     streamRef.current = stream;
@@ -51,7 +59,29 @@ export function useChunker({ stream, onChunk }: UseChunkerOptions): UseChunkerRe
     onChunkRef.current = onChunk;
   }, [onChunk]);
 
+  // When paused goes true, kill any in-flight recorder so its segment
+  // never reaches handleChunk. Nulling onstop/ondataavailable BEFORE
+  // stop() means the async stop event finds no handler attached and
+  // the blob is discarded — no shared-flag race with future recordings.
+  useEffect(() => {
+    pausedRef.current = paused;
+    if (paused && recorderRef.current) {
+      const rec = recorderRef.current;
+      recorderRef.current = null;
+      if (rec.state !== 'inactive') {
+        rec.onstop = null;
+        rec.ondataavailable = null;
+        try {
+          rec.stop();
+        } catch {
+          /* already stopping */
+        }
+      }
+    }
+  }, [paused]);
+
   const start = useCallback(() => {
+    if (pausedRef.current) return;
     const s = streamRef.current;
     if (!s || recorderRef.current) return;
 
