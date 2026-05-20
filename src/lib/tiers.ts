@@ -31,7 +31,21 @@ interface Tier1IndexEntry {
   questionWords: Set<string>;
 }
 
-const MIN_SCORE = 2;
+// B6.1 — bumped from 2 → 4 because a 2-word overlap was matching
+// generic "what is a X" phrasing against unrelated entries.
+const MIN_SCORE = 4;
+
+// Stop words and 3-letter-or-shorter words don't count toward the
+// score — they're either common across all questions ("what", "is",
+// "the") or too short to be discriminative ("of", "to"). Without this
+// filter, "what is a hash map" trivially matches "what is a B-tree"
+// with score 3.
+const STOP_WORDS = new Set([
+  'what','is','a','an','the','how','do','you','would',
+  'your','in','of','to','and','for','can','tell','me','about','explain','describe',
+  'give','us','have','with','on','are','was','were','be','been','it','this','that',
+  'why','when','where','which','who','will','should','could','does','did','has','had',
+]);
 
 let index: Tier1IndexEntry[] = [];
 let loaded = false;
@@ -79,8 +93,10 @@ export async function loadTier1(): Promise<void> {
 
 /**
  * findTier1Match — return the prepared Q&A whose question shares the
- * most words with the transcript, provided the overlap is at least
- * MIN_SCORE (2) unique words. Returns null otherwise.
+ * most *meaningful* words with the transcript, provided the overlap
+ * is at least MIN_SCORE (4) such words. A "meaningful" word is one
+ * not in STOP_WORDS and longer than 2 characters. Returns null on
+ * miss so the caller falls through to Tier 3.
  *
  * Ties broken by first-encountered (insertion order), which matches
  * the order entries appear in the source bank.
@@ -88,15 +104,19 @@ export async function loadTier1(): Promise<void> {
 export function findTier1Match(transcript: string): Tier1Entry | null {
   if (!transcript || index.length === 0) return null;
 
-  const words = tokenize(transcript);
-  if (words.size === 0) return null;
+  // Filter once at the top so the per-entry inner loop is just a Set
+  // lookup with no extra branches.
+  const meaningful = new Set(
+    [...tokenize(transcript)].filter((w) => w.length > 2 && !STOP_WORDS.has(w)),
+  );
+  if (meaningful.size === 0) return null;
 
   let bestEntry: Tier1Entry | null = null;
   let bestScore = 0;
 
   for (const item of index) {
     let score = 0;
-    for (const word of words) {
+    for (const word of meaningful) {
       if (item.questionWords.has(word)) score++;
     }
     if (score > bestScore) {
