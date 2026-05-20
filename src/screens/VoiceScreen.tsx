@@ -6,6 +6,7 @@ import { useVAD } from '../hooks/useVAD';
 import { useChunker } from '../hooks/useChunker';
 import { transcribeChunk } from '../lib/whisper';
 import { streamOpenAIAnswer, streamClaudeAnswer } from '../lib/ai';
+import { findTier1Match } from '../lib/tiers';
 import WaveBars from '../components/WaveBars';
 
 const STATUS_META: Record<Status, { label: string; dot: string; pulse: boolean }> = {
@@ -75,6 +76,10 @@ export default function VoiceScreen() {
   // pipeline has produced this session.
   const [chunkCount, setChunkCount] = useState(0);
 
+  // Which tier answered the most recent chunk — drives the badge in
+  // the bottom-right of the session bar. null = no answer yet.
+  const [currentTier, setCurrentTier] = useState<1 | 3 | null>(null);
+
   const handleChunk = useCallback(
     async (blob: Blob, durationMs: number) => {
       // eslint-disable-next-line no-console
@@ -108,6 +113,15 @@ export default function VoiceScreen() {
       }
       setTranscript(text);
 
+      // ---- Tier 1: instant match against the prepared Q&A bank ----
+      const t1 = findTier1Match(text);
+      if (t1) {
+        setAnswer(t1.answer);
+        setCurrentTier(1);
+        setStatus('listening');
+        return;
+      }
+
       // ---- Tier 3: stream an answer ----
       // Pull keys+model fresh at dispatch time so a settings change
       // mid-session takes effect on the next chunk without a rebind.
@@ -122,6 +136,7 @@ export default function VoiceScreen() {
       }
 
       setAnswer('');
+      setCurrentTier(3);
       setStatus('answering');
 
       const streamer = isOpenAI ? streamOpenAIAnswer : streamClaudeAnswer;
@@ -207,6 +222,7 @@ export default function VoiceScreen() {
       return;
     }
     setChunkCount(0);
+    setCurrentTier(null);
     setupAudio(stream);
     await wakeLock.request();
     setStatus('listening');
@@ -301,8 +317,12 @@ export default function VoiceScreen() {
           </button>
 
           <div className="font-mono text-[11px] tracking-widest text-text-dim px-3 py-2 rounded-lg border border-border bg-panel">
-            TIER <span className="text-text-dim">—</span>
-            <span className="text-accent ml-2">{chunkCount}</span>
+            {currentTier ? (
+              <span className="text-accent">T{currentTier}</span>
+            ) : (
+              <span>—</span>
+            )}
+            <span className="text-text-dim ml-2">{chunkCount}</span>
           </div>
         </div>
       </footer>

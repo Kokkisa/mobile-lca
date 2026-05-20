@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { useStore } from './store/useStore';
+import { loadTier1 } from './lib/tiers';
 import VoiceScreen from './screens/VoiceScreen';
 import SettingsScreen from './screens/SettingsScreen';
 
@@ -9,6 +10,9 @@ export default function App() {
 
   useEffect(() => {
     hydrate();
+    // Fire-and-forget: tier1 fetch is independent of the rest of the
+    // app; matching just returns null until the bank arrives.
+    void loadTier1();
   }, [hydrate]);
 
   return (
