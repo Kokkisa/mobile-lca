@@ -4,6 +4,7 @@ import { useMic } from '../hooks/useMic';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { useVAD } from '../hooks/useVAD';
 import { useChunker } from '../hooks/useChunker';
+import { transcribeChunk } from '../lib/whisper';
 import WaveBars from '../components/WaveBars';
 
 const STATUS_META: Record<Status, { label: string; dot: string; pulse: boolean }> = {
@@ -58,6 +59,7 @@ export default function VoiceScreen() {
   const setTranscript = useStore((s) => s.setTranscript);
   const setAnswer = useStore((s) => s.setAnswer);
   const setScreen = useStore((s) => s.setScreen);
+  const groqApiKey = useStore((s) => s.groqApiKey);
 
   const mic = useMic();
   const wakeLock = useWakeLock();
@@ -73,23 +75,37 @@ export default function VoiceScreen() {
   const [chunkCount, setChunkCount] = useState(0);
 
   const handleChunk = useCallback(
-    (blob: Blob, durationMs: number) => {
+    async (blob: Blob, durationMs: number) => {
       // eslint-disable-next-line no-console
       console.log(
         `[chunk] ${Math.round(durationMs)}ms · ${(blob.size / 1024).toFixed(1)} KB · ${blob.type}`,
       );
       setChunkCount((c) => c + 1);
-      // Skip the status flicker if the session was already stopped — a
-      // late in-flight blob can arrive a beat after STOP.
+
+      // Skip if the session was stopped — a late in-flight blob can
+      // arrive a beat after STOP and we don't want to flicker the UI
+      // or fire a transcription request after the user has left.
       if (useStore.getState().status === 'idle') return;
+
+      // Settings gate: surface the missing-key state in the transcript
+      // bubble itself so the user sees exactly why nothing's happening,
+      // and don't bother flipping status / hitting the network.
+      if (!groqApiKey) {
+        setTranscript('Add Groq API key in Settings');
+        return;
+      }
+
       setStatus('processing');
-      window.setTimeout(() => {
-        if (useStore.getState().status === 'processing') {
-          setStatus('listening');
-        }
-      }, 500);
+      const text = await transcribeChunk(blob, groqApiKey);
+
+      // Re-check after the await — user may have hit STOP while we
+      // were waiting on Whisper. If so, leave the idle state alone.
+      if (useStore.getState().status === 'idle') return;
+
+      if (text) setTranscript(text);
+      setStatus('listening');
     },
-    [setStatus],
+    [setStatus, setTranscript, groqApiKey],
   );
 
   const chunker = useChunker({
