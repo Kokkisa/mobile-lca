@@ -61,6 +61,8 @@ export default function VoiceScreen() {
   const setTranscript = useStore((s) => s.setTranscript);
   const setAnswer = useStore((s) => s.setAnswer);
   const appendAnswer = useStore((s) => s.appendAnswer);
+  const appendToHistory = useStore((s) => s.appendToHistory);
+  const clearHistory = useStore((s) => s.clearHistory);
   const setScreen = useStore((s) => s.setScreen);
 
   const mic = useMic();
@@ -118,14 +120,22 @@ export default function VoiceScreen() {
       if (t1) {
         setAnswer(t1.answer);
         setCurrentTier(1);
+        appendToHistory('user', text);
+        appendToHistory('assistant', t1.answer);
         setStatus('listening');
         return;
       }
 
       // ---- Tier 3: stream an answer ----
-      // Pull keys+model fresh at dispatch time so a settings change
-      // mid-session takes effect on the next chunk without a rebind.
-      const { selectedModel, openaiApiKey, anthropicApiKey } = useStore.getState();
+      // Snapshot prior history BEFORE the current user turn is
+      // appended, so the streamer doesn't see the new question twice
+      // (once in history, once as the trailing user message).
+      const {
+        selectedModel,
+        openaiApiKey,
+        anthropicApiKey,
+        conversationHistory,
+      } = useStore.getState();
       const isOpenAI = selectedModel === 'gpt-4o';
       const answerKey = isOpenAI ? openaiApiKey : anthropicApiKey;
 
@@ -139,15 +149,31 @@ export default function VoiceScreen() {
       setCurrentTier(3);
       setStatus('answering');
 
+      // Record the question now (per spec — before streaming). The
+      // streamer still receives the pre-question snapshot above.
+      appendToHistory('user', text);
+
+      // Accumulate the streamed tokens locally so we have the full
+      // assistant text to append to history after the stream ends.
+      let streamed = '';
       const streamer = isOpenAI ? streamOpenAIAnswer : streamClaudeAnswer;
-      await streamer(text, answerKey, (token) => appendAnswer(token));
+      await streamer(
+        text,
+        answerKey,
+        (token) => {
+          streamed += token;
+          appendAnswer(token);
+        },
+        conversationHistory,
+      );
+      if (streamed) appendToHistory('assistant', streamed);
 
       // Final idle re-check — STOP can also land during the answer
       // stream. Leave status alone if we're already torn down.
       if (useStore.getState().status === 'idle') return;
       setStatus('listening');
     },
-    [setStatus, setTranscript, setAnswer, appendAnswer],
+    [setStatus, setTranscript, setAnswer, appendAnswer, appendToHistory],
   );
 
   const chunker = useChunker({
@@ -210,6 +236,7 @@ export default function VoiceScreen() {
       teardownAudio();
       mic.stop();
       await wakeLock.release();
+      clearHistory();
       setStatus('idle');
       return;
     }

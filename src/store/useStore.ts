@@ -4,6 +4,15 @@ export type Screen = 'voice' | 'settings';
 export type Status = 'idle' | 'listening' | 'processing' | 'answering';
 export type Model = 'gpt-4o' | 'claude-3-5-sonnet';
 
+export interface HistoryMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+// Cap on stored turns. 8 entries = 4 Q+A exchanges of context for the
+// next AI answer, matching the desktop renderer's MAX_HISTORY.
+const MAX_HISTORY = 8;
+
 const LS = {
   groq: 'lca_groq_key',
   openai: 'lca_openai_key',
@@ -24,6 +33,10 @@ interface StoreState {
   answer: string;
   setAnswer: (a: string) => void;
   appendAnswer: (chunk: string) => void;
+
+  conversationHistory: HistoryMessage[];
+  appendToHistory: (role: 'user' | 'assistant', content: string) => void;
+  clearHistory: () => void;
 
   groqApiKey: string;
   setGroqApiKey: (k: string) => void;
@@ -53,6 +66,17 @@ export const useStore = create<StoreState>((set) => ({
   answer: '',
   setAnswer: (answer) => set({ answer }),
   appendAnswer: (chunk) => set((state) => ({ answer: state.answer + chunk })),
+
+  conversationHistory: [],
+  appendToHistory: (role, content) =>
+    set((state) => {
+      const next = [...state.conversationHistory, { role, content }];
+      // Drop oldest entries beyond the cap so the message array we
+      // ship to the LLM stays bounded.
+      if (next.length > MAX_HISTORY) next.splice(0, next.length - MAX_HISTORY);
+      return { conversationHistory: next };
+    }),
+  clearHistory: () => set({ conversationHistory: [] }),
 
   groqApiKey: '',
   setGroqApiKey: (k) => {

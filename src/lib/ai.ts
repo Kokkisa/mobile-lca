@@ -114,6 +114,7 @@ export async function streamOpenAIAnswer(
   question: string,
   apiKey: string,
   onChunk: (token: string) => void,
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
 ): Promise<void> {
   if (!apiKey) {
     console.warn('[ai/openai] no api key — skipping');
@@ -132,8 +133,11 @@ export async function streamOpenAIAnswer(
         stream: true,
         max_tokens: MAX_TOKENS,
         temperature: TEMPERATURE,
+        // History is the prior turns only; the current question is
+        // appended last so it's the most-recent user message.
         messages: [
           { role: 'system', content: buildSystemPrompt() },
+          ...history,
           { role: 'user', content: question },
         ],
       }),
@@ -167,6 +171,7 @@ export async function streamClaudeAnswer(
   question: string,
   apiKey: string,
   onChunk: (token: string) => void,
+  history: Array<{ role: 'user' | 'assistant'; content: string }>,
 ): Promise<void> {
   if (!apiKey) {
     console.warn('[ai/claude] no api key — skipping');
@@ -193,8 +198,9 @@ export async function streamClaudeAnswer(
         stream: true,
         system: buildSystemPrompt(),
         // Claude takes the system prompt separately; `messages` is
-        // user/assistant turns only.
-        messages: [{ role: 'user', content: question }],
+        // user/assistant turns only. History first, current question
+        // last so it's the most-recent user message.
+        messages: [...history, { role: 'user', content: question }],
       }),
     });
 
