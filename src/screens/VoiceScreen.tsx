@@ -1,4 +1,8 @@
+import { useRef, useState } from 'react';
 import { useStore, type Status } from '../store/useStore';
+import { useMic } from '../hooks/useMic';
+import { useWakeLock } from '../hooks/useWakeLock';
+import WaveBars from '../components/WaveBars';
 
 const STATUS_META: Record<Status, { label: string; dot: string; pulse: boolean }> = {
   idle:       { label: 'STANDBY',    dot: 'bg-text-dim',         pulse: false },
@@ -53,11 +57,76 @@ export default function VoiceScreen() {
   const setAnswer = useStore((s) => s.setAnswer);
   const setScreen = useStore((s) => s.setScreen);
 
+  const mic = useMic();
+  const wakeLock = useWakeLock();
+
+  // Audio graph: MediaStreamSource → AnalyserNode. Held in refs so we
+  // can tear them down on STOP, exposed as state so WaveBars can react.
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const sourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const [analyser, setAnalyser] = useState<AnalyserNode | null>(null);
+
   const isActive = status !== 'idle';
 
-  const onToggleSession = () => {
-    if (isActive) setStatus('idle');
-    else setStatus('listening');
+  const setupAudio = (stream: MediaStream) => {
+    // Standard AudioContext on modern iOS Safari (14.5+); webkit
+    // fallback covers older builds without crashing the type checker.
+    const AudioCtxCtor: typeof AudioContext =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const ctx = new AudioCtxCtor();
+    audioCtxRef.current = ctx;
+
+    const source = ctx.createMediaStreamSource(stream);
+    sourceRef.current = source;
+
+    const node = ctx.createAnalyser();
+    node.fftSize = 2048;
+    node.smoothingTimeConstant = 0.6;
+    source.connect(node);
+
+    setAnalyser(node);
+
+    // Safari sometimes returns the context in 'suspended' even when
+    // created from a user gesture — resume is a no-op if already running.
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+  };
+
+  const teardownAudio = () => {
+    if (sourceRef.current) {
+      sourceRef.current.disconnect();
+      sourceRef.current = null;
+    }
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
+    }
+    setAnalyser(null);
+  };
+
+  const onToggleSession = async () => {
+    if (isActive) {
+      // STOP — order matters: kill analyser graph before stopping
+      // tracks so the WaveBars RAF sees null first and bails cleanly.
+      teardownAudio();
+      mic.stop();
+      await wakeLock.release();
+      setStatus('idle');
+      return;
+    }
+
+    // START — must await permission BEFORE flipping status, so a
+    // denied request never leaves us stuck in 'listening' with no mic.
+    const stream = await mic.requestMicPermission();
+    if (!stream) {
+      setTranscript('Microphone access denied');
+      return;
+    }
+    setupAudio(stream);
+    await wakeLock.request();
+    setStatus('listening');
   };
 
   const onClear = () => {
@@ -84,6 +153,13 @@ export default function VoiceScreen() {
           </button>
         </div>
       </header>
+
+      {/* Wave bars — only while a session is active */}
+      {isActive && (
+        <div className="px-4 pt-4">
+          <WaveBars analyser={analyser} active={isActive} />
+        </div>
+      )}
 
       {/* Transcript bubble */}
       <div className="px-4 pt-4">
