@@ -16,10 +16,9 @@ const OPENAI_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
 const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages';
 
 const OPENAI_MODEL = 'gpt-4o';
-// Pinned to a dated snapshot rather than the `-latest` alias — some
-// accounts have access to one but not the other, and the dated name
-// is what Anthropic guarantees won't change behaviour under us.
-const ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022';
+// Matches the desktop build's default (livecallassistant/renderer.js
+// line 1863) — the entitlement that's actually on the user's account.
+const ANTHROPIC_MODEL = 'claude-sonnet-4-5';
 
 const MAX_TOKENS = 300;
 const TEMPERATURE = 0.4;
