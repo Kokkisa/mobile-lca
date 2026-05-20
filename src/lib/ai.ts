@@ -16,10 +16,10 @@ const OPENAI_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
 const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages';
 
 const OPENAI_MODEL = 'gpt-4o';
-// Store's value is 'claude-3-5-sonnet' (UI label) — the real API
-// model name needs a date or 'latest' alias. We pin to -latest so
-// Anthropic can roll us forward without a code change.
-const ANTHROPIC_MODEL = 'claude-3-5-sonnet-latest';
+// Pinned to a dated snapshot rather than the `-latest` alias — some
+// accounts have access to one but not the other, and the dated name
+// is what Anthropic guarantees won't change behaviour under us.
+const ANTHROPIC_MODEL = 'claude-3-5-sonnet-20241022';
 
 const MAX_TOKENS = 300;
 const TEMPERATURE = 0.4;
@@ -47,26 +47,39 @@ interface OpenAIStreamEvent {
 }
 
 interface AnthropicStreamEvent {
-  type?: string;
-  delta?: { text?: string; type?: string };
+  delta?: {
+    type?: string;
+    text?: string;
+  };
 }
 
 /**
- * readSSE — drains a fetch Response body line-by-line, dispatches
- * parsed JSON payloads for each `data:` line. Holds the trailing
- * (potentially partial) line in a buffer across chunk boundaries.
- * `isDone` lets the caller short-circuit on a sentinel ([DONE]) the
- * SSE format reserves for OpenAI's stream termination.
+ * readSSE — drains a fetch Response body line-by-line, tracking SSE
+ * event blocks so callers can dispatch on event type at the *protocol*
+ * layer rather than inspecting the data payload.
+ *
+ * SSE structure is:
+ *     event: <name>           ← optional
+ *     data:  <payload>
+ *                             ← blank line ends the block
+ *
+ * We hold the trailing (possibly incomplete) line in `buf` across
+ * chunk boundaries, and we hold `currentEvent` across them too — a
+ * chunk can end after the `event:` line and before the `data:` line.
+ *
+ * `onEvent` receives `(eventType, payload)` where eventType is the
+ * most recent `event:` value (or null if none preceded the data line —
+ * which is the OpenAI case, since they don't send event lines).
  */
-async function readSSE<T>(
+async function readSSE(
   response: Response,
-  onEvent: (event: T) => void,
-  isDone?: (raw: string) => boolean,
+  onEvent: (eventType: string | null, payload: string) => void,
 ): Promise<void> {
   if (!response.body) return;
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buf = '';
+  let currentEvent: string | null = null;
 
   for (;;) {
     const { value, done } = await reader.read();
@@ -78,16 +91,22 @@ async function readSSE<T>(
 
     for (const line of lines) {
       const trimmed = line.trim();
-      if (!trimmed.startsWith('data:')) continue;
-      const payload = trimmed.slice(5).trim();
-      if (isDone?.(payload)) continue;
-      try {
-        const json = JSON.parse(payload) as T;
-        onEvent(json);
-      } catch {
-        // Partial frame straddling a chunk boundary — safe to drop,
-        // the next read will include the full line.
+      if (trimmed === '') {
+        // Blank line = end of an SSE event block. Reset so a stray
+        // data line in the next block doesn't inherit this type.
+        currentEvent = null;
+        continue;
       }
+      if (trimmed.startsWith('event:')) {
+        currentEvent = trimmed.slice(6).trim();
+        continue;
+      }
+      if (trimmed.startsWith('data:')) {
+        const payload = trimmed.slice(5).trim();
+        onEvent(currentEvent, payload);
+        continue;
+      }
+      // Ignore id:, retry:, and `: comment` lines.
     }
   }
 }
@@ -127,14 +146,19 @@ export async function streamOpenAIAnswer(
       return;
     }
 
-    await readSSE<OpenAIStreamEvent>(
-      res,
-      (event) => {
-        const token = event.choices?.[0]?.delta?.content;
+    // OpenAI doesn't use event: lines, so eventType is always null.
+    // [DONE] is a terminator sentinel, not a token.
+    await readSSE(res, (_eventType, payload) => {
+      if (payload === '[DONE]') return;
+      try {
+        const json = JSON.parse(payload) as OpenAIStreamEvent;
+        const token = json.choices?.[0]?.delta?.content;
         if (token) onChunk(token);
-      },
-      (raw) => raw === '[DONE]',
-    );
+      } catch {
+        // Partial JSON straddling a chunk boundary — drop it; the
+        // next read will deliver the rest.
+      }
+    });
   } catch (e) {
     console.error('[ai/openai] request failed:', e);
   }
@@ -181,13 +205,22 @@ export async function streamClaudeAnswer(
       return;
     }
 
-    await readSSE<AnthropicStreamEvent>(res, (event) => {
-      // Claude emits typed events; only content_block_delta carries
-      // tokens. message_start/stop, content_block_start/stop, ping,
-      // and message_delta are all ignored.
-      if (event.type === 'content_block_delta') {
-        const token = event.delta?.text;
-        if (token) onChunk(token);
+    // Gate on the SSE event type, not on a field inside the data JSON.
+    // Claude emits message_start, content_block_start, ping,
+    // content_block_delta, content_block_stop, message_delta,
+    // message_stop — only content_block_delta carries text tokens.
+    // The inner delta.type === 'text_delta' check is the second-line
+    // defence for future delta variants (e.g. input_json_delta for
+    // tool use), so we don't accidentally feed JSON into the answer.
+    await readSSE(res, (eventType, payload) => {
+      if (eventType !== 'content_block_delta') return;
+      try {
+        const json = JSON.parse(payload) as AnthropicStreamEvent;
+        if (json.delta?.type === 'text_delta' && json.delta.text) {
+          onChunk(json.delta.text);
+        }
+      } catch {
+        // Partial JSON across a chunk boundary — drop it.
       }
     });
   } catch (e) {
