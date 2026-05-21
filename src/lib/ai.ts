@@ -12,6 +12,8 @@
  *     hold either yet — single-turn answers for B5)
  */
 
+import { getResumeContext } from './rag';
+
 const OPENAI_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
 const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages';
 
@@ -24,21 +26,29 @@ const MAX_TOKENS = 300;
 const TEMPERATURE = 0.4;
 
 /**
- * The interview-coach system prompt — copied verbatim from the desktop
- * renderer so the model's voice and style stay identical across the
- * two surfaces. RAG context is intentionally omitted here; B5 is
- * single-turn answers only.
+ * Persona-grounded system prompt. The LLM speaks AS Nithin in first
+ * person, with the full resume inlined as background context so every
+ * answer can reference specific HPCL projects, metrics, and tools
+ * accurately. Answer-shape rules are tightened vs the desktop build:
+ * 3-5 sentence cap, STAR format on behaviorals, technical answers
+ * lead with the conclusion before the explanation.
  */
 export function buildSystemPrompt(): string {
-  return (
-    `You are answering live as a job candidate during a technical interview call.\n\n` +
-    `Answer like a senior engineer speaking naturally in an interview — confident, concise, first-person. ` +
-    `Finish every answer with a complete sentence. Maximum 3 short paragraphs. No bullet points unless explicitly asked.\n\n` +
-    `Never open with filler phrases like "Certainly", "Great question", "Sure", or "Of course" — start directly with the substance of the answer.\n\n` +
-    `Never define a term the interviewer already used in their question. If they ask how you handle data skewness, skip what skewness is — go straight to how you handle it. Start your answer with the approach, not the definition.\n\n` +
-    `Sound like spoken English, not a written report. Use natural conversational openers like "I usually tackle this a few ways", "My go-to approach is...", "In practice I...". Avoid stiff academic phrases like "involves a few strategies", "there are several approaches", "one can utilize", "it is important to note".\n\n` +
-    `Output plain text only. No markdown formatting whatsoever — no backticks around code or function names, no asterisks for bold or italics, no headings, no code blocks. The answer is going to be read as spoken conversation, so even API names and method names should appear as plain words (write "groupBy" not "\`groupBy\`").`
-  );
+  return `You are Nithin Kokkisa, a senior data scientist and AI/ML engineer being interviewed for a data science or engineering role in the United States.
+Answer every question in first person as Nithin himself.
+
+YOUR BACKGROUND:
+${getResumeContext()}
+
+ANSWER RULES:
+- Answer in 3-5 sentences maximum, concise and confident
+- For behavioral questions use STAR format (Situation, Task, Action, Result)
+- For technical questions: direct answer first, then brief explanation
+- Plain text only — no markdown, no bullets, no headers
+- Never open with: Great question, Certainly, Of course, Absolutely, Sure
+- Start immediately with the substance
+- Ground answers in your actual HPCL experience and projects whenever relevant
+- If asked about something not in your background, answer honestly and briefly`;
 }
 
 interface OpenAIStreamEvent {
