@@ -185,6 +185,26 @@ export default function VoiceScreen() {
   // visible on the underlying screen but obscured by the overlay).
   const [selectedTurn, setSelectedTurn] = useState<{ q: string; a: string } | null>(null);
 
+  // Network reachability — driven by navigator.onLine + the window's
+  // online/offline events. navigator.onLine is best-effort (it tells
+  // you the device has an interface, not that the internet is
+  // reachable) but it's good enough for the OFFLINE indicator since
+  // the common cases (airplane mode, no signal) flip it correctly.
+  const [online, setOnline] = useState<boolean>(
+    typeof navigator === 'undefined' ? true : navigator.onLine,
+  );
+
+  useEffect(() => {
+    const goOnline = () => setOnline(true);
+    const goOffline = () => setOnline(false);
+    window.addEventListener('online', goOnline);
+    window.addEventListener('offline', goOffline);
+    return () => {
+      window.removeEventListener('online', goOnline);
+      window.removeEventListener('offline', goOffline);
+    };
+  }, []);
+
   // Manual mute — pauses VAD + chunker but keeps the mic stream alive
   // so unmute is instant (no re-prompt). Auto-clears after 45s; tapping
   // again while muted just resets the countdown.
@@ -489,12 +509,19 @@ export default function VoiceScreen() {
         <div className="flex items-center justify-between px-4 pt-3 pb-3 border-b border-border">
           <div className="flex items-center gap-2">
             <span className="font-mono font-bold text-accent text-lg tracking-wider glow-text">LCA</span>
-            {isActive ? (
+            {/* Three-state hierarchy: OFFLINE always wins (you need to
+                know the network's down before anything else); then
+                running-session timer; then version text at rest. */}
+            {!online ? (
+              <span className="font-mono text-[10px] text-yellow-400 tracking-widest">
+                OFFLINE · T1 ONLY
+              </span>
+            ) : isActive ? (
               <span className="font-mono text-[11px] text-accent tracking-widest tabular-nums">
                 {formatMMSS(sessionElapsed)}
               </span>
             ) : (
-              <span className="font-mono text-[10px] text-text-dim tracking-widest">v0.1</span>
+              <span className="font-mono text-[10px] text-text-dim tracking-widest">v1.0</span>
             )}
           </div>
           <StatusPill status={status} muted={muted} />
