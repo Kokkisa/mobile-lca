@@ -34,6 +34,40 @@ function EyeIcon({ open }: { open: boolean }) {
   );
 }
 
+interface TextInputProps {
+  label: string;
+  placeholder: string;
+  value: string;
+  onChange: (v: string) => void;
+}
+
+/** Plain text input — same visual treatment as KeyInput minus the
+ *  password masking and show/hide eye. Used for non-secret fields like
+ *  the interview target role/company. */
+function TextInput({ label, placeholder, value, onChange }: TextInputProps) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <label className="font-mono text-[10px] tracking-[0.2em] text-text-dim">{label}</label>
+        {value && (
+          <span className="font-mono text-[9px] tracking-widest text-accent">SAVED</span>
+        )}
+      </div>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="words"
+        spellCheck={false}
+        className="w-full bg-panel border border-border rounded-xl px-4 py-3 text-[14px] font-mono text-text placeholder:text-text-dim/60 focus:outline-none focus:border-accent/60"
+      />
+    </div>
+  );
+}
+
 interface KeyInputProps {
   label: string;
   placeholder: string;
@@ -120,6 +154,10 @@ export default function SettingsScreen() {
   const setAnthropicApiKey = useStore((s) => s.setAnthropicApiKey);
   const selectedModel = useStore((s) => s.selectedModel);
   const setSelectedModel = useStore((s) => s.setSelectedModel);
+  const targetRole = useStore((s) => s.targetRole);
+  const setTargetRole = useStore((s) => s.setTargetRole);
+  const targetCompany = useStore((s) => s.targetCompany);
+  const setTargetCompany = useStore((s) => s.setTargetCompany);
 
   const isReady = Boolean(openaiApiKey || anthropicApiKey);
 
@@ -218,6 +256,27 @@ export default function SettingsScreen() {
 
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-y-auto px-4 py-5 space-y-6">
+        {/* Interview target — surfaces into the system prompt so
+            answers are tailored to the specific role + company the
+            user is interviewing for. */}
+        <section className="space-y-4">
+          <h2 className="font-mono text-[11px] tracking-[0.25em] text-text-dim">
+            INTERVIEW TARGET
+          </h2>
+          <TextInput
+            label="ROLE"
+            placeholder="e.g. Senior Data Scientist"
+            value={targetRole}
+            onChange={setTargetRole}
+          />
+          <TextInput
+            label="COMPANY"
+            placeholder="e.g. Uber, Microsoft, Google"
+            value={targetCompany}
+            onChange={setTargetCompany}
+          />
+        </section>
+
         {/* API keys */}
         <section className="space-y-4">
           <h2 className="font-mono text-[11px] tracking-[0.25em] text-text-dim">API KEYS</h2>

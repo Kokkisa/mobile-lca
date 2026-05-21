@@ -13,6 +13,7 @@
  */
 
 import { getResumeContext } from './rag';
+import { useStore } from '../store/useStore';
 
 const OPENAI_ENDPOINT = 'https://api.openai.com/v1/chat/completions';
 const ANTHROPIC_ENDPOINT = 'https://api.anthropic.com/v1/messages';
@@ -32,9 +33,33 @@ const TEMPERATURE = 0.4;
  * accurately. Answer-shape rules are tightened vs the desktop build:
  * 3-5 sentence cap, STAR format on behaviorals, technical answers
  * lead with the conclusion before the explanation.
+ *
+ * B16 — when the user has set a target role and/or company in
+ * Settings, the opening line and the answer rules are tailored so
+ * the model orients its responses toward that specific opportunity.
  */
 export function buildSystemPrompt(): string {
-  return `You are Nithin Kokkisa, a senior data scientist and AI/ML engineer being interviewed for a data science or engineering role in the United States.
+  // Read fresh at call time so a Settings change mid-session takes
+  // effect on the very next prompt — no rebind needed.
+  const { targetRole, targetCompany } = useStore.getState();
+  const role = targetRole.trim();
+  const company = targetCompany.trim();
+
+  let opening: string;
+  if (role && company) {
+    opening = `You are Nithin Kokkisa interviewing for the role of ${role} at ${company}.`;
+  } else if (role) {
+    opening = `You are Nithin Kokkisa interviewing for the role of ${role}.`;
+  } else {
+    opening = `You are Nithin Kokkisa, a senior data scientist and AI/ML engineer being interviewed for a data science or engineering role in the United States.`;
+  }
+
+  // Tailoring rule only when a role is set — company is optional.
+  const tailoringRule = role
+    ? `- Tailor your answers to be relevant for ${role}${company ? ` at ${company}` : ''} specifically\n`
+    : '';
+
+  return `${opening}
 Answer every question in first person as Nithin himself.
 
 YOUR BACKGROUND:
@@ -48,7 +73,7 @@ ANSWER RULES:
 - Never open with: Great question, Certainly, Of course, Absolutely, Sure
 - Start immediately with the substance
 - Ground answers in your actual HPCL experience and projects whenever relevant
-- If asked about something not in your background, answer honestly and briefly`;
+${tailoringRule}- If asked about something not in your background, answer honestly and briefly`;
 }
 
 interface OpenAIStreamEvent {

@@ -19,6 +19,8 @@ const LS = {
   openai: 'lca_openai_key',
   anthropic: 'lca_anthropic_key',
   model: 'lca_selected_model',
+  role: 'lca_role',
+  company: 'lca_company',
 } as const;
 
 interface StoreState {
@@ -50,6 +52,14 @@ interface StoreState {
 
   selectedModel: Model;
   setSelectedModel: (m: Model) => void;
+
+  // Interview targeting — surfaced into the system prompt so answers
+  // are tailored to the specific role/company the user is interviewing for.
+  targetRole: string;
+  setTargetRole: (role: string) => void;
+
+  targetCompany: string;
+  setTargetCompany: (company: string) => void;
 
   hydrate: () => void;
 }
@@ -119,6 +129,26 @@ export const useStore = create<StoreState>((set) => ({
     set({ selectedModel: m });
   },
 
+  targetRole: '',
+  setTargetRole: (role) => {
+    try {
+      localStorage.setItem(LS.role, role);
+    } catch {
+      /* localStorage unavailable */
+    }
+    set({ targetRole: role });
+  },
+
+  targetCompany: '',
+  setTargetCompany: (company) => {
+    try {
+      localStorage.setItem(LS.company, company);
+    } catch {
+      /* localStorage unavailable */
+    }
+    set({ targetCompany: company });
+  },
+
   hydrate: () => {
     try {
       const groq = localStorage.getItem(LS.groq) ?? '';
@@ -127,11 +157,15 @@ export const useStore = create<StoreState>((set) => ({
       const stored = localStorage.getItem(LS.model);
       const model: Model =
         stored === 'gpt-4o' || stored === 'claude-3-5-sonnet' ? stored : 'gpt-4o';
+      const role = localStorage.getItem(LS.role) ?? '';
+      const company = localStorage.getItem(LS.company) ?? '';
       set({
         groqApiKey: groq,
         openaiApiKey: openai,
         anthropicApiKey: anthropic,
         selectedModel: model,
+        targetRole: role,
+        targetCompany: company,
       });
     } catch {
       /* localStorage unavailable — keep defaults */
