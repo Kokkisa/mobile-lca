@@ -1,39 +1,70 @@
 /**
- * tier2.ts — Tier-2 semantic cache, persistent across reloads.
+ * tier2.ts — Tier-2 cache of past Tier-3 answers.
  *
- * Every Tier-3 answer is embedded and stashed in memory; when the next
- * transcript arrives, we embed it and cosine-match against the cache.
- * If a stored question is similar enough (>= 0.85), we serve its
- * answer instantly instead of paying for another LLM round-trip.
+ * Original implementation (B8/B12) used OpenAI embeddings for
+ * semantic match — every transcript paid one embedding round-trip
+ * (~1.5-2s) before falling through to Tier-3 on a miss. That
+ * latency was eating the win the cache was supposed to provide.
  *
- * B12 — the cache is now write-through to IndexedDB, so it survives
- * page reloads and PWA cold starts. The in-memory array is still the
- * source of truth for matching (synchronous, fast); IDB is the
- * persistent backing store. FIFO eviction past 50 entries drops the
- * oldest from both layers. IDB ops are best-effort: any failure is
- * logged and swallowed so the memory cache keeps working.
+ * B17 replaces the embedding lookup with a Tier-1-style keyword
+ * fuzzy match: tokenize, drop stop words, count overlap, threshold
+ * at 3. Pure synchronous, < 1ms, no API calls. The trade-off is
+ * obvious — paraphrases that an embedding model would catch
+ * ("how do you handle skew" ≈ "what's your approach to data skew")
+ * now require shared keywords. In practice, mid-interview repeats
+ * tend to reuse the same vocabulary, so this catches the common
+ * case while eliminating the latency hit on every miss.
+ *
+ * The in-memory cache is still mirrored to IndexedDB for cross-
+ * session persistence. Old IDB entries from the embedding era still
+ * have an `embedding` field on disk — we silently ignore it on read,
+ * and writes from B17 onward omit it. The dead field will age out
+ * via normal FIFO eviction within ~50 turns.
  */
 
-interface CachedAnswer {
-  /** Numeric key for IDB — Date.now() + Math.random() so insertion
-   *  order matches lexical order. Set before the IDB put, so it's
-   *  always defined even if the IDB write later fails. */
-  dbKey: number;
-  question: string;
-  answer: string;
-  embedding: number[];
-}
-
 const MAX_CACHE_SIZE = 50;
-const SIMILARITY_THRESHOLD = 0.85;
-const EMBEDDING_MODEL = 'text-embedding-3-small';
-const EMBEDDING_ENDPOINT = 'https://api.openai.com/v1/embeddings';
+const MIN_SCORE = 3;
 
 const DB_NAME = 'lca-cache';
 const STORE_NAME = 'tier2';
 const DB_VERSION = 1;
 
+// Copy of the stop-word + short-word filter used by tiers.ts. Kept in
+// sync manually — a "what is a X" transcript should never trivially
+// match a cached "what is a Y" answer just because they share filler
+// words.
+const STOP_WORDS = new Set([
+  'what','is','a','an','the','how','do','you','would',
+  'your','in','of','to','and','for','can','tell','me','about','explain','describe',
+  'give','us','have','with','on','are','was','were','be','been','it','this','that',
+  'why','when','where','which','who','will','should','could','does','did','has','had',
+]);
+
+interface CachedAnswer {
+  /** Numeric key for IDB — Date.now() + Math.random() so insertion
+   *  order matches lexical order. */
+  dbKey: number;
+  question: string;
+  answer: string;
+  /** Pre-tokenised question word set — built at addToCache time so
+   *  the per-match inner loop is just Set lookups. Not persisted. */
+  questionTokens: Set<string>;
+}
+
+/** Shape that actually round-trips through IndexedDB — no Set, no
+ *  embedding. We reconstruct questionTokens on load. */
+interface DBEntry {
+  dbKey: number;
+  question: string;
+  answer: string;
+}
+
 let cache: CachedAnswer[] = [];
+
+function tokenizeForMatch(text: string): Set<string> {
+  const all = text.toLowerCase().split(/\W+/).filter(Boolean);
+  return new Set(all.filter((w) => w.length > 2 && !STOP_WORDS.has(w)));
+}
 
 // ---------- IndexedDB layer ----------
 
@@ -76,11 +107,18 @@ function openDB(): Promise<IDBDatabase | null> {
 async function dbPut(entry: CachedAnswer): Promise<void> {
   const db = await openDB();
   if (!db) return;
+  // Persist the lean shape — no questionTokens Set (not serialisable),
+  // no embedding (gone since B17).
+  const dbEntry: DBEntry = {
+    dbKey: entry.dbKey,
+    question: entry.question,
+    answer: entry.answer,
+  };
   try {
     await new Promise<void>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readwrite');
       const store = tx.objectStore(STORE_NAME);
-      const req = store.put(entry);
+      const req = store.put(dbEntry);
       req.onsuccess = () => resolve();
       req.onerror = () => reject(req.error);
     });
@@ -109,24 +147,30 @@ async function dbDelete(dbKey: number): Promise<void> {
  * loadCacheFromDB — hydrate the in-memory cache from IDB on app
  * start. Sorts by dbKey ascending so the oldest entry is at the
  * front of the array, matching the FIFO eviction direction.
- * Safe to call multiple times; later calls just re-read the store.
+ * Reconstructs questionTokens from the persisted question text;
+ * any legacy `embedding` field from the pre-B17 era is silently
+ * ignored.
  */
 export async function loadCacheFromDB(): Promise<void> {
   const db = await openDB();
   if (!db) return;
   try {
-    const entries = await new Promise<CachedAnswer[]>((resolve, reject) => {
+    const entries = await new Promise<DBEntry[]>((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readonly');
       const store = tx.objectStore(STORE_NAME);
       const req = store.getAll();
-      req.onsuccess = () => resolve((req.result as CachedAnswer[]) ?? []);
+      req.onsuccess = () => resolve((req.result as DBEntry[]) ?? []);
       req.onerror = () => reject(req.error);
     });
     entries.sort((a, b) => a.dbKey - b.dbKey);
-    cache = entries;
+    cache = entries.map((e) => ({
+      dbKey: e.dbKey,
+      question: e.question,
+      answer: e.answer,
+      questionTokens: tokenizeForMatch(e.question),
+    }));
     // Trim to cap in case the DB somehow holds more (e.g. a previous
-    // eviction's delete failed). Memory is the lookup surface, so it
-    // must stay bounded.
+    // eviction's delete failed).
     while (cache.length > MAX_CACHE_SIZE) {
       const evicted = cache.shift();
       if (evicted) void dbDelete(evicted.dbKey);
@@ -145,75 +189,21 @@ void openDB();
 // ---------- Public surface ----------
 
 /**
- * Standard cosine similarity. Returns 0 if either vector is degenerate
- * (zero magnitude or mismatched length).
+ * addToCache — push the (question, answer) pair into the in-memory
+ * array AND into IndexedDB. Pre-tokenises the question so future
+ * lookups are zero-prep. Evicts oldest entries past MAX_CACHE_SIZE
+ * from both layers.
  */
-export function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length) return 0;
-  let dot = 0;
-  let magA = 0;
-  let magB = 0;
-  for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    magA += a[i] * a[i];
-    magB += b[i] * b[i];
-  }
-  const denom = Math.sqrt(magA) * Math.sqrt(magB);
-  return denom === 0 ? 0 : dot / denom;
-}
+export function addToCache(question: string, answer: string): void {
+  if (!question || !answer) return;
 
-/**
- * embedText — POST to OpenAI's embeddings endpoint. Returns the vector
- * on success, null on any failure (missing key, HTTP error, bad shape,
- * network blip).
- */
-async function embedText(text: string, apiKey: string): Promise<number[] | null> {
-  if (!apiKey || !text) return null;
-  try {
-    const res = await fetch(EMBEDDING_ENDPOINT, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({
-        model: EMBEDDING_MODEL,
-        input: text,
-      }),
-    });
-    if (!res.ok) {
-      console.error(`[tier2] embed HTTP ${res.status} ${res.statusText}`);
-      return null;
-    }
-    const data = (await res.json()) as { data?: Array<{ embedding?: number[] }> };
-    const vec = data.data?.[0]?.embedding;
-    return Array.isArray(vec) && vec.length > 0 ? vec : null;
-  } catch (e) {
-    console.error('[tier2] embed request failed:', e);
-    return null;
-  }
-}
-
-/**
- * addToCache — embed the question, push the (question, answer,
- * embedding) triple into the in-memory array AND into IndexedDB.
- * Evicts oldest entries past MAX_CACHE_SIZE from both layers. Silent
- * on any failure — the cache is best-effort.
- */
-export async function addToCache(
-  question: string,
-  answer: string,
-  openaiApiKey: string,
-): Promise<void> {
-  if (!openaiApiKey || !question || !answer) return;
-  const embedding = await embedText(question, openaiApiKey);
-  if (!embedding) return;
-
-  // Date.now() + Math.random() — milliseconds plus a sub-ms fraction,
-  // so two adds in the same tick still produce distinct, monotonically
-  // increasing keys. Numeric key sorts cleanly for FIFO eviction.
   const dbKey = Date.now() + Math.random();
-  const entry: CachedAnswer = { dbKey, question, answer, embedding };
+  const entry: CachedAnswer = {
+    dbKey,
+    question,
+    answer,
+    questionTokens: tokenizeForMatch(question),
+  };
 
   cache.push(entry);
   void dbPut(entry);
@@ -225,26 +215,30 @@ export async function addToCache(
 }
 
 /**
- * findCachedAnswer — embed the transcript, cosine-match against every
- * cached embedding, return the highest-scoring answer if its similarity
- * crosses SIMILARITY_THRESHOLD (0.85). Returns null otherwise.
+ * findCachedAnswer — tokenize the transcript, count keyword overlap
+ * against each cached question's pre-tokenised word set, return the
+ * answer with the highest overlap if its score crosses MIN_SCORE (3).
+ * Pure sync, no API call, sub-millisecond on a 50-entry cache.
  */
-export async function findCachedAnswer(
-  transcript: string,
-  openaiApiKey: string,
-): Promise<string | null> {
-  if (!openaiApiKey || !transcript || cache.length === 0) return null;
-  const embedding = await embedText(transcript, openaiApiKey);
-  if (!embedding) return null;
+export function findCachedAnswer(transcript: string): string | null {
+  if (!transcript || cache.length === 0) return null;
+
+  const transcriptTokens = tokenizeForMatch(transcript);
+  if (transcriptTokens.size === 0) return null;
 
   let bestAnswer: string | null = null;
-  let bestSim = 0;
+  let bestScore = 0;
+
   for (const entry of cache) {
-    const sim = cosineSimilarity(embedding, entry.embedding);
-    if (sim > bestSim) {
-      bestSim = sim;
+    let score = 0;
+    for (const word of transcriptTokens) {
+      if (entry.questionTokens.has(word)) score++;
+    }
+    if (score > bestScore) {
+      bestScore = score;
       bestAnswer = entry.answer;
     }
   }
-  return bestSim >= SIMILARITY_THRESHOLD ? bestAnswer : null;
+
+  return bestScore >= MIN_SCORE ? bestAnswer : null;
 }

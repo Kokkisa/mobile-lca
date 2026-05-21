@@ -330,22 +330,18 @@ export default function VoiceScreen() {
         return;
       }
 
-      // ---- Tier 2: semantic cache of past Tier 3 answers ----
-      // Requires an OpenAI key for the embedding call. Falls through
-      // silently if missing or if findCachedAnswer errors.
-      const t2Key = useStore.getState().openaiApiKey;
-      if (t2Key) {
-        const cached = await findCachedAnswer(text, t2Key);
-        // User may have stopped during the embedding round-trip.
-        if (useStore.getState().status === 'idle') return;
-        if (cached) {
-          setAnswer(cached);
-          setCurrentTier(2);
-          appendToHistory('user', text);
-          appendToHistory('assistant', cached);
-          setStatus('listening');
-          return;
-        }
+      // ---- Tier 2: keyword fuzzy match against the runtime cache ----
+      // Pure synchronous — no API call, no await, runs in < 1ms over
+      // the 50-entry cache. Replaces the B8 embedding lookup which
+      // was adding ~1.5-2s on every Tier-1 miss.
+      const cached = findCachedAnswer(text);
+      if (cached) {
+        setAnswer(cached);
+        setCurrentTier(2);
+        appendToHistory('user', text);
+        appendToHistory('assistant', cached);
+        setStatus('listening');
+        return;
       }
 
       // ---- Tier 3: stream an answer ----
@@ -390,10 +386,10 @@ export default function VoiceScreen() {
       );
       if (streamed) {
         appendToHistory('assistant', streamed);
-        // Fire-and-forget: stash this Q→A pair in the Tier-2 cache so
-        // a similar future question short-circuits the LLM call.
-        // addToCache no-ops silently if the key is missing.
-        void addToCache(text, streamed, useStore.getState().openaiApiKey);
+        // Stash this Q→A pair in the Tier-2 cache so a similar future
+        // question short-circuits the LLM call. Synchronous in-memory
+        // push + fire-and-forget IDB write under the hood.
+        addToCache(text, streamed);
       }
 
       // Final idle re-check — STOP can also land during the answer
