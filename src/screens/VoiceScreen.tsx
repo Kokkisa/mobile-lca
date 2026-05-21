@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useStore, type Status } from '../store/useStore';
+import { useStore, type Status, type HistoryMessage } from '../store/useStore';
 import { useMic } from '../hooks/useMic';
 import { useWakeLock } from '../hooks/useWakeLock';
 import { useVAD } from '../hooks/useVAD';
@@ -77,6 +77,42 @@ function formatMMSS(totalSeconds: number): string {
   return `${mm}:${ss}`;
 }
 
+/**
+ * pairTurns — flatten the conversation history's alternating
+ * user/assistant rows into Q&A pairs for the history panel. A
+ * trailing user message with no assistant yet (in-flight stream)
+ * renders with "…" so the panel doesn't drop the row entirely.
+ */
+function pairTurns(history: HistoryMessage[]): Array<{ q: string; a: string }> {
+  const pairs: Array<{ q: string; a: string }> = [];
+  for (let i = 0; i < history.length; i += 2) {
+    const userMsg = history[i];
+    const asstMsg = history[i + 1];
+    if (!userMsg || userMsg.role !== 'user') continue;
+    pairs.push({
+      q: userMsg.content,
+      a: asstMsg && asstMsg.role === 'assistant' ? asstMsg.content : '…',
+    });
+  }
+  return pairs;
+}
+
+function ChevronDownIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="6 9 12 15 18 9" />
+    </svg>
+  );
+}
+
+function ChevronUpIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="18 15 12 9 6 15" />
+    </svg>
+  );
+}
+
 function GearIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -110,6 +146,7 @@ export default function VoiceScreen() {
   const appendAnswer = useStore((s) => s.appendAnswer);
   const appendToHistory = useStore((s) => s.appendToHistory);
   const clearHistory = useStore((s) => s.clearHistory);
+  const conversationHistory = useStore((s) => s.conversationHistory);
   const setScreen = useStore((s) => s.setScreen);
 
   const mic = useMic();
@@ -128,6 +165,11 @@ export default function VoiceScreen() {
   // Which tier answered the most recent chunk — drives the badge in
   // the bottom-right of the session bar. null = no answer yet.
   const [currentTier, setCurrentTier] = useState<1 | 2 | 3 | null>(null);
+
+  // History panel expand/collapse. Default collapsed so the screen
+  // stays calm; user opens it explicitly when they want to inspect
+  // what the model is being fed.
+  const [showHistory, setShowHistory] = useState(false);
 
   // Manual mute — pauses VAD + chunker but keeps the mic stream alive
   // so unmute is instant (no re-prompt). Auto-clears after 45s; tapping
@@ -479,6 +521,68 @@ export default function VoiceScreen() {
           )}
         </div>
       </div>
+
+      {/* History panel — collapsed by default, expands on tap.
+          Hidden entirely when there's no history yet so the layout
+          stays calm at the start of a session. Max scroll height
+          capped at 180px so it can't shove the answer card off
+          screen on iPhone SE. */}
+      {(() => {
+        const pairs = pairTurns(conversationHistory);
+        if (pairs.length === 0) return null;
+        return (
+          <div className="px-4 pt-3">
+            {showHistory ? (
+              <div className="rounded-lg bg-panel border border-border overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setShowHistory(false)}
+                  aria-label="Collapse history"
+                  className="w-full px-3 flex items-center justify-between active:opacity-60 min-h-[40px]"
+                >
+                  <span className="font-mono text-[10px] text-text-dim tracking-widest">
+                    HISTORY <span className="text-accent">({pairs.length} TURNS)</span>
+                  </span>
+                  <span className="text-text-dim">
+                    <ChevronUpIcon />
+                  </span>
+                </button>
+                <div className="max-h-[180px] overflow-y-auto px-3 py-2 space-y-3 border-t border-border">
+                  {/* Reverse so the most-recent Q&A sits at the top —
+                      that's what the user is most likely to want at a
+                      glance, no scroll required. */}
+                  {pairs.slice().reverse().map((pair, i) => (
+                    <div key={`${pairs.length - i}`} className="space-y-1">
+                      <p className="font-mono text-[11px] text-text-dim line-clamp-1">
+                        <span className="text-accent mr-1">Q:</span>
+                        {pair.q}
+                      </p>
+                      <p className="font-mono text-[12px] text-text leading-snug line-clamp-2">
+                        <span className="text-accent mr-1">A:</span>
+                        {pair.a}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowHistory(true)}
+                aria-label="Expand history"
+                className="w-full px-3 flex items-center justify-between rounded-lg bg-panel border border-border active:opacity-60 min-h-[40px]"
+              >
+                <span className="font-mono text-[10px] text-text-dim tracking-widest">
+                  HISTORY <span className="text-accent">({pairs.length} TURNS)</span>
+                </span>
+                <span className="text-text-dim">
+                  <ChevronDownIcon />
+                </span>
+              </button>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Answer card */}
       <main className="flex-1 min-h-0 px-4 pt-3 pb-2">
