@@ -20,22 +20,26 @@ const STATUS_META: Record<Status, { label: string; dot: string; pulse: boolean }
 function StatusPill({ status, muted }: { status: Status; muted: boolean }) {
   // Mute overrides the listening/processing/answering label — the user
   // needs an unambiguous "your mic is off" signal regardless of what
-  // the pipeline is doing in the background.
+  // the pipeline is doing in the background. We go all-out on the
+  // muted variant (larger text, bigger dot, thicker border, stronger
+  // bg) so it's literally impossible to miss across the room.
   if (muted) {
     return (
-      <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-red-500/10 border border-red-500/40">
-        <span className="block w-2 h-2 rounded-full bg-red-500 animate-pulse-ring" />
-        <span className="font-mono text-[11px] tracking-[0.18em] text-red-400">MUTED</span>
+      <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-red-500/20 border-2 border-red-500">
+        <span className="block w-3 h-3 rounded-full bg-red-500 animate-pulse-ring" />
+        <span className="font-mono font-bold text-[13px] tracking-[0.22em] text-red-400">
+          MUTED
+        </span>
       </div>
     );
   }
   const meta = STATUS_META[status];
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-panel border border-border">
+    <div className="flex items-center gap-2 px-3.5 py-2 rounded-full bg-panel border border-border">
       <span
-        className={`block w-2 h-2 rounded-full ${meta.dot} ${meta.pulse ? 'animate-pulse-ring' : ''}`}
+        className={`block w-2.5 h-2.5 rounded-full ${meta.dot} ${meta.pulse ? 'animate-pulse-ring' : ''}`}
       />
-      <span className="font-mono text-[11px] tracking-[0.18em] text-text-dim">
+      <span className="font-mono text-[12px] tracking-[0.18em] text-text-dim">
         {meta.label}
       </span>
     </div>
@@ -66,6 +70,12 @@ function MicOnIcon() {
 }
 
 const MUTE_DURATION_SECONDS = 45;
+
+function formatMMSS(totalSeconds: number): string {
+  const mm = Math.floor(totalSeconds / 60).toString().padStart(2, '0');
+  const ss = (totalSeconds % 60).toString().padStart(2, '0');
+  return `${mm}:${ss}`;
+}
 
 function GearIcon() {
   return (
@@ -126,6 +136,37 @@ export default function VoiceScreen() {
   const [muteRemaining, setMuteRemaining] = useState(0);
   const muteTimerRef = useRef<number | null>(null);
 
+  // Session timer — counts seconds elapsed since START SESSION. Shown
+  // as MM:SS in the header so the user can pace themselves during a
+  // call. Stops + resets on STOP SESSION.
+  const [sessionElapsed, setSessionElapsed] = useState(0);
+  const sessionTimerRef = useRef<number | null>(null);
+
+  // Answer auto-scroll — keeps the latest streaming tokens visible at
+  // the bottom of the answer card. Fires every render where `answer`
+  // changed, which during a Tier-3 stream is many times per second.
+  const answerScrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const el = answerScrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [answer]);
+
+  const clearSessionTimer = useCallback(() => {
+    if (sessionTimerRef.current !== null) {
+      window.clearInterval(sessionTimerRef.current);
+      sessionTimerRef.current = null;
+    }
+  }, []);
+
+  const startSessionTimer = useCallback(() => {
+    clearSessionTimer();
+    setSessionElapsed(0);
+    sessionTimerRef.current = window.setInterval(() => {
+      setSessionElapsed((s) => s + 1);
+    }, 1000);
+  }, [clearSessionTimer]);
+
   const clearMuteTimer = useCallback(() => {
     if (muteTimerRef.current !== null) {
       window.clearInterval(muteTimerRef.current);
@@ -169,13 +210,14 @@ export default function VoiceScreen() {
     setMuteRemaining(0);
   };
 
-  // Safety net: clear timer on unmount so hot reload / app close doesn't
-  // leave the interval running.
+  // Safety net: clear both timers on unmount so hot reload / app close
+  // doesn't leave intervals running.
   useEffect(() => {
     return () => {
       clearMuteTimer();
+      clearSessionTimer();
     };
-  }, [clearMuteTimer]);
+  }, [clearMuteTimer, clearSessionTimer]);
 
   const handleChunk = useCallback(
     async (blob: Blob, durationMs: number) => {
@@ -365,6 +407,10 @@ export default function VoiceScreen() {
       setMuted(false);
       setMuteRemaining(0);
       clearMuteTimer();
+      // Session timer resets to 00:00 — the next START kicks it off
+      // again from zero.
+      clearSessionTimer();
+      setSessionElapsed(0);
       setStatus('idle');
       return;
     }
@@ -380,6 +426,7 @@ export default function VoiceScreen() {
     setCurrentTier(null);
     setupAudio(stream);
     await wakeLock.request();
+    startSessionTimer();
     setStatus('listening');
   };
 
@@ -395,12 +442,18 @@ export default function VoiceScreen() {
         <div className="flex items-center justify-between px-4 pt-3 pb-3 border-b border-border">
           <div className="flex items-center gap-2">
             <span className="font-mono font-bold text-accent text-lg tracking-wider glow-text">LCA</span>
-            <span className="font-mono text-[10px] text-text-dim tracking-widest">v0.1</span>
+            {isActive ? (
+              <span className="font-mono text-[11px] text-accent tracking-widest tabular-nums">
+                {formatMMSS(sessionElapsed)}
+              </span>
+            ) : (
+              <span className="font-mono text-[10px] text-text-dim tracking-widest">v0.1</span>
+            )}
           </div>
           <StatusPill status={status} muted={muted} />
           <button
             onClick={() => setScreen('settings')}
-            className="text-text-dim hover:text-text p-1.5 -m-1.5 active:opacity-60"
+            className="text-text-dim hover:text-text p-2 -m-1 active:opacity-60 min-h-[44px] min-w-[44px] flex items-center justify-center"
             aria-label="Settings"
           >
             <GearIcon />
@@ -417,19 +470,28 @@ export default function VoiceScreen() {
 
       {/* Transcript bubble */}
       <div className="px-4 pt-4">
-        <div className="rounded-2xl bg-panel border border-border px-4 py-3 min-h-[64px] flex items-center">
-          <span className="font-mono text-[10px] text-text-dim tracking-widest mr-3 shrink-0">HEARD</span>
+        <div className="rounded-2xl bg-panel border border-border px-4 py-3.5 min-h-[68px] flex items-center">
+          <span className="font-mono text-[10px] text-text-dim tracking-widest mr-3 shrink-0">
+            HEARD
+          </span>
           {transcript ? (
-            <p className="font-mono text-sm text-text leading-relaxed line-clamp-3">{transcript}</p>
+            // line-clamp-2 hard-truncates to two lines; fade-bottom-mask
+            // softens the cut so a long question doesn't end with an
+            // abrupt ellipsis line — the text just dissolves.
+            <p className="font-mono text-sm text-text leading-relaxed line-clamp-2 fade-bottom-mask">
+              {transcript}
+            </p>
           ) : (
-            <p className="font-mono text-sm text-text-dim italic">Waiting for the next question…</p>
+            <p className="font-mono text-sm text-text-dim italic">
+              Waiting for the next question…
+            </p>
           )}
         </div>
       </div>
 
       {/* Answer card */}
-      <main className="flex-1 min-h-0 px-4 pt-4 pb-2">
-        <div className="h-full rounded-2xl bg-panel border border-border p-4 overflow-hidden flex flex-col">
+      <main className="flex-1 min-h-0 px-4 pt-3 pb-2">
+        <div className="h-full rounded-2xl bg-panel border border-border p-5 overflow-hidden flex flex-col">
           <div className="flex items-center justify-between mb-3">
             <span className="font-mono text-[10px] text-text-dim tracking-widest">ANSWER</span>
             {status === 'answering' && (
@@ -438,9 +500,11 @@ export default function VoiceScreen() {
               </span>
             )}
           </div>
-          <div className="flex-1 min-h-0 overflow-y-auto">
+          <div ref={answerScrollRef} className="flex-1 min-h-0 overflow-y-auto">
             {answer ? (
-              <p className="font-mono text-[15px] leading-relaxed whitespace-pre-wrap text-text">{answer}</p>
+              <p className="font-mono text-base leading-relaxed whitespace-pre-wrap text-text">
+                {answer}
+              </p>
             ) : (
               <div className="h-full flex items-center justify-center">
                 <ConcentricRings />
@@ -452,10 +516,10 @@ export default function VoiceScreen() {
 
       {/* Bottom bar */}
       <footer className="safe-bottom">
-        <div className="flex items-center justify-between gap-3 px-4 pt-3 pb-4 border-t border-border">
+        <div className="flex items-center justify-between gap-2 px-4 pt-3 pb-4 border-t border-border">
           <button
             onClick={onClear}
-            className="font-mono text-[11px] tracking-widest text-text-dim hover:text-text px-3 py-2 rounded-lg border border-border bg-panel active:opacity-60"
+            className="font-mono text-[11px] tracking-widest text-text-dim hover:text-text px-3 rounded-lg border border-border bg-panel active:opacity-60 min-h-[44px] flex items-center"
           >
             CLEAR
           </button>
@@ -464,7 +528,7 @@ export default function VoiceScreen() {
             <button
               onClick={onMuteTap}
               aria-label="Mute"
-              className="flex items-center gap-1.5 font-mono text-[11px] tracking-widest text-text-dim hover:text-text px-3 py-2 rounded-lg border border-border bg-panel active:opacity-60"
+              className="flex items-center gap-1.5 font-mono text-[11px] tracking-widest text-text-dim hover:text-text px-3 rounded-lg border border-border bg-panel active:opacity-60 min-h-[44px]"
             >
               <MicOffIcon />
               <span>MUTE</span>
@@ -476,18 +540,20 @@ export default function VoiceScreen() {
               <button
                 onClick={onMuteTap}
                 aria-label={`Muted, ${muteRemaining}s remaining — tap to reset`}
-                className="flex items-center gap-1.5 font-mono text-[11px] tracking-widest text-white px-3 py-2 rounded-lg bg-red-500/80 border border-red-500 active:opacity-70"
+                className="flex items-center gap-1.5 font-mono text-[12px] tracking-widest font-bold text-white px-3 rounded-lg bg-red-500/80 border border-red-500 active:opacity-70 min-h-[44px] tabular-nums"
               >
                 <MicOffIcon />
                 <span>{muteRemaining}</span>
               </button>
+              {/* Icon-only on small screens — the green colour and
+                  mic-on glyph plus aria-label carry the meaning, and
+                  every extra pixel goes to the STOP button instead. */}
               <button
                 onClick={onUnmute}
                 aria-label="Unmute"
-                className="flex items-center gap-1.5 font-mono text-[11px] tracking-widest font-bold text-bg px-3 py-2 rounded-lg bg-accent border border-accent active:opacity-70"
+                className="flex items-center justify-center font-mono px-3 rounded-lg bg-accent border border-accent text-bg active:opacity-70 min-h-[44px] min-w-[44px]"
               >
                 <MicOnIcon />
-                <span>UNMUTE</span>
               </button>
             </>
           )}
@@ -496,20 +562,23 @@ export default function VoiceScreen() {
             onClick={onToggleSession}
             className={
               isActive
-                ? 'flex-1 font-mono text-[12px] tracking-[0.18em] py-3 rounded-xl border border-accent text-accent bg-transparent active:opacity-70'
-                : 'flex-1 font-mono text-[12px] tracking-[0.18em] py-3 rounded-xl bg-accent text-bg font-bold glow-accent active:opacity-80'
+                ? 'flex-1 font-mono text-[12px] tracking-[0.18em] rounded-xl border border-accent text-accent bg-transparent active:opacity-70 min-h-[44px] flex items-center justify-center'
+                : 'flex-1 font-mono text-[12px] tracking-[0.18em] rounded-xl bg-accent text-bg font-bold glow-accent active:opacity-80 min-h-[44px] flex items-center justify-center'
             }
           >
-            {isActive ? 'STOP SESSION' : 'START SESSION'}
+            {/* When muted, the row gets cramped by the extra UNMUTE
+                button — drop to the short label so STOP doesn't wrap
+                on iPhone SE. */}
+            {!isActive ? 'START SESSION' : muted ? 'STOP' : 'STOP SESSION'}
           </button>
 
-          <div className="font-mono text-[11px] tracking-widest text-text-dim px-3 py-2 rounded-lg border border-border bg-panel">
+          <div className="font-mono text-[11px] tracking-widest text-text-dim px-3 rounded-lg border border-border bg-panel min-h-[44px] flex items-center">
             {currentTier ? (
               <span className="text-accent">T{currentTier}</span>
             ) : (
               <span>—</span>
             )}
-            <span className="text-text-dim ml-2">{chunkCount}</span>
+            <span className="text-text-dim ml-2 tabular-nums">{chunkCount}</span>
           </div>
         </div>
       </footer>
