@@ -113,6 +113,14 @@ function ChevronUpIcon() {
   );
 }
 
+function ChevronRightIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
+}
+
 function GearIcon() {
   return (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -170,6 +178,12 @@ export default function VoiceScreen() {
   // stays calm; user opens it explicitly when they want to inspect
   // what the model is being fed.
   const [showHistory, setShowHistory] = useState(false);
+
+  // When set, shows a full-screen detail overlay for one past turn —
+  // full untruncated Q + A, scrollable. Session keeps running behind
+  // the overlay (mic still active, VAD still polling, status pill
+  // visible on the underlying screen but obscured by the overlay).
+  const [selectedTurn, setSelectedTurn] = useState<{ q: string; a: string } | null>(null);
 
   // Manual mute — pauses VAD + chunker but keeps the mic stream alive
   // so unmute is instant (no re-prompt). Auto-clears after 45s; tapping
@@ -469,7 +483,7 @@ export default function VoiceScreen() {
   };
 
   return (
-    <div className="flex flex-col h-full w-full safe-x">
+    <div className="relative flex flex-col h-full w-full safe-x">
       {/* Header */}
       <header className="safe-top">
         <div className="flex items-center justify-between px-4 pt-3 pb-3 border-b border-border">
@@ -547,21 +561,32 @@ export default function VoiceScreen() {
                     <ChevronUpIcon />
                   </span>
                 </button>
-                <div className="max-h-[180px] overflow-y-auto px-3 py-2 space-y-3 border-t border-border">
+                <div className="max-h-[180px] overflow-y-auto px-3 py-2 space-y-2 border-t border-border">
                   {/* Reverse so the most-recent Q&A sits at the top —
                       that's what the user is most likely to want at a
                       glance, no scroll required. */}
                   {pairs.slice().reverse().map((pair, i) => (
-                    <div key={`${pairs.length - i}`} className="space-y-1">
-                      <p className="font-mono text-[11px] text-text-dim line-clamp-1">
-                        <span className="text-accent mr-1">Q:</span>
-                        {pair.q}
-                      </p>
+                    <button
+                      key={`${pairs.length - i}`}
+                      type="button"
+                      onClick={() => setSelectedTurn(pair)}
+                      aria-label="View full question and answer"
+                      className="w-full text-left rounded-md px-2 -mx-2 py-1.5 space-y-1 active:bg-accent/10 group"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="font-mono text-[11px] text-text-dim line-clamp-1 flex-1 group-active:text-accent">
+                          <span className="text-accent mr-1">Q:</span>
+                          {pair.q}
+                        </p>
+                        <span className="text-text-dim mt-1 shrink-0 group-active:text-accent">
+                          <ChevronRightIcon />
+                        </span>
+                      </div>
                       <p className="font-mono text-[12px] text-text leading-snug line-clamp-2">
                         <span className="text-accent mr-1">A:</span>
                         {pair.a}
                       </p>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -677,6 +702,53 @@ export default function VoiceScreen() {
           </div>
         </div>
       </footer>
+
+      {/* History detail overlay — full-screen modal over the session
+          UI. Session continues running underneath (mic, VAD, chunker,
+          in-flight stream all untouched) — we just paint a panel on
+          top. Dismissed via the BACK button which clears
+          selectedTurn. */}
+      {selectedTurn && (
+        <div className="absolute inset-0 z-50 flex flex-col bg-bg safe-x animate-slide-up">
+          <header className="safe-top">
+            <div className="grid grid-cols-3 items-center px-4 pt-3 pb-3 border-b border-border">
+              <button
+                type="button"
+                onClick={() => setSelectedTurn(null)}
+                aria-label="Back to session"
+                className="font-mono text-[12px] tracking-widest text-text-dim hover:text-text active:opacity-60 min-h-[44px] flex items-center text-left"
+              >
+                ← BACK
+              </button>
+              <h2 className="font-mono text-sm tracking-[0.25em] text-text text-center">
+                HISTORY
+              </h2>
+              {/* Spacer so the title stays optically centered against
+                  the BACK button on the left. */}
+              <span aria-hidden="true" />
+            </div>
+          </header>
+
+          <div className="flex-1 min-h-0 overflow-y-auto px-5 py-5 space-y-6">
+            <div>
+              <span className="font-mono text-[10px] text-text-dim tracking-widest">
+                QUESTION
+              </span>
+              <p className="font-mono text-base text-accent leading-relaxed mt-2 whitespace-pre-wrap">
+                {selectedTurn.q}
+              </p>
+            </div>
+            <div className="border-t border-border pt-5">
+              <span className="font-mono text-[10px] text-text-dim tracking-widest">
+                ANSWER
+              </span>
+              <p className="font-mono text-base text-text leading-relaxed mt-2 whitespace-pre-wrap">
+                {selectedTurn.a}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
