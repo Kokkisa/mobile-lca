@@ -9,9 +9,10 @@ export interface HistoryMessage {
   content: string;
 }
 
-// Cap on stored turns. 8 entries = 4 Q+A exchanges of context for the
-// next AI answer, matching the desktop renderer's MAX_HISTORY.
-const MAX_HISTORY = 8;
+// Cap on stored turns. 20 entries = 10 Q+A exchanges of context for
+// the next AI answer — bumped up from the desktop's 8-entry default
+// to give the model a deeper view of the interview's arc.
+const MAX_HISTORY = 20;
 
 const LS = {
   groq: 'lca_groq_key',
