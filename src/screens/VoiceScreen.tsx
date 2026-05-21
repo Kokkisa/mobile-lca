@@ -142,15 +142,6 @@ export default function VoiceScreen() {
   const [sessionElapsed, setSessionElapsed] = useState(0);
   const sessionTimerRef = useRef<number | null>(null);
 
-  // Answer auto-scroll — keeps the latest streaming tokens visible at
-  // the bottom of the answer card. Fires every render where `answer`
-  // changed, which during a Tier-3 stream is many times per second.
-  const answerScrollRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const el = answerScrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [answer]);
 
   const clearSessionTimer = useCallback(() => {
     if (sessionTimerRef.current !== null) {
@@ -500,7 +491,7 @@ export default function VoiceScreen() {
               </span>
             )}
           </div>
-          <div ref={answerScrollRef} className="flex-1 min-h-0 overflow-y-auto">
+          <div className="flex-1 min-h-0 overflow-y-auto">
             {answer ? (
               <p className="font-mono text-base leading-relaxed whitespace-pre-wrap text-text">
                 {answer}
