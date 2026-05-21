@@ -1,5 +1,13 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { useStore, type Model } from '../store/useStore';
+import {
+  clearCustomBank,
+  getTier1Stats,
+  loadTier1,
+  parseAndStripBank,
+  saveCustomBank,
+  type Tier1Stats,
+} from '../lib/tiers';
 
 function BackIcon() {
   return (
@@ -115,6 +123,61 @@ export default function SettingsScreen() {
 
   const isReady = Boolean(openaiApiKey || anthropicApiKey);
 
+  // ── Q&A bank state ──────────────────────────────────────────────
+  // Initial stats may show count=0 if Settings is opened before
+  // App.tsx's mount-effect finishes loadTier1(); the useEffect below
+  // re-checks once the load promise resolves.
+  const [bankInfo, setBankInfo] = useState<Tier1Stats>(() => getTier1Stats());
+  const [bankStatus, setBankStatus] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadTier1().then(() => {
+      if (!cancelled) setBankInfo(getTier1Stats());
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onUploadTap = () => {
+    fileInputRef.current?.click();
+  };
+
+  const onFileSelected = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setBankStatus('Reading file…');
+    try {
+      const text = await file.text();
+      const entries = parseAndStripBank(text);
+      if (!entries) {
+        setBankStatus('Invalid file format');
+        return;
+      }
+      await saveCustomBank(entries);
+      setBankInfo(getTier1Stats());
+      setBankStatus(`Loaded ${entries.length.toLocaleString()} entries`);
+    } catch (err) {
+      setBankStatus(err instanceof Error ? err.message : 'Upload failed');
+    } finally {
+      // Reset the input so re-selecting the same file fires onChange.
+      if (e.target) e.target.value = '';
+    }
+  };
+
+  const onResetBank = async () => {
+    setBankStatus('Resetting…');
+    try {
+      await clearCustomBank();
+      setBankInfo(getTier1Stats());
+      setBankStatus('Reset to default');
+    } catch (err) {
+      setBankStatus(err instanceof Error ? err.message : 'Reset failed');
+    }
+  };
+
   return (
     <div className="flex flex-col h-full w-full safe-x bg-bg">
       {/* Header */}
@@ -176,6 +239,57 @@ export default function SettingsScreen() {
             value={anthropicApiKey}
             onChange={setAnthropicApiKey}
           />
+        </section>
+
+        {/* Q&A Bank — upload custom bank from device, reset to default */}
+        <section className="space-y-3">
+          <h2 className="font-mono text-[11px] tracking-[0.25em] text-text-dim">Q&amp;A BANK</h2>
+
+          <div className="rounded-xl border border-border bg-panel p-4 space-y-4">
+            <div>
+              <div className="font-mono text-[14px] text-text">
+                {bankInfo.count.toLocaleString()} entries loaded
+              </div>
+              <div className="font-mono text-[10px] text-text-dim tracking-widest mt-1">
+                {bankInfo.source === 'custom'
+                  ? 'CUSTOM BANK'
+                  : bankInfo.source === 'default'
+                    ? 'DEFAULT BANK'
+                    : 'NOT YET LOADED'}
+              </div>
+            </div>
+
+            {bankStatus && (
+              <div className="font-mono text-[11px] text-accent">{bankStatus}</div>
+            )}
+
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={onUploadTap}
+                className="w-full font-mono text-[11px] tracking-[0.18em] text-bg font-bold bg-accent rounded-lg min-h-[44px] flex items-center justify-center active:opacity-70"
+              >
+                UPLOAD Q&amp;A BANK
+              </button>
+              <button
+                type="button"
+                onClick={onResetBank}
+                className="w-full font-mono text-[11px] tracking-[0.18em] text-text-dim border border-border rounded-lg min-h-[44px] flex items-center justify-center active:opacity-60"
+              >
+                RESET TO DEFAULT
+              </button>
+            </div>
+
+            {/* Hidden — actual file picker triggered by the button
+                above so the native input doesn't steal styling. */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              onChange={onFileSelected}
+            />
+          </div>
         </section>
 
         {/* Model picker */}
